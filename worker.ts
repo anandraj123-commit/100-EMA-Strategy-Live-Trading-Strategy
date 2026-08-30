@@ -1,7 +1,10 @@
 import { config } from './lib/config';
 import { emaSeries, evaluateSetup } from './lib/strategy';
-import { getCandles, getProduct, getTicker, getWallet, getPosition, getOpenOrders, placeMarketOrder, placeBracket, setLeverage } from './lib/delta';
+import { getCandles, getProduct, getTicker, getWallet, getPosition, getOpenOrders, getFillsBounded, getOrderHistoryBounded, toDeltaMicroseconds, placeMarketOrder, placeBracket, setLeverage } from './lib/delta';
 import { readControl, writeStatus } from './lib/state';
+import { persistClosedTrade, persistOpenBotTrade, persistOpenManualTrade } from './lib/trades/persistence';
+import { findOpenBotTrade, findOpenManualTrade, findUnresolvedBotTrades, findUnresolvedManualTrades, markTradeReconciling } from './lib/trades/repository';
+import { applyDailyLossOutcome, classifyBotExitEvidence, deltaTimestampMilliseconds, findBotCloseBoundary, findTradeCloseBoundary, resolvePositionOwnership } from './lib/trades/reconciliation';
 
 let product:any = null;
 let pending:any = null;
@@ -30,11 +33,56 @@ let lastWalletFetchAt = 0;
 let cachedPosition:any = null;
 let cachedPositionSize = 0;
 let lastPositionFetchAt = 0;
+let lastStaleReconciliationAt = 0;
+let lastManualReconciliationAt = 0;
+let lastAttributionRetryAt = 0;
 
 const POSITION_REFRESH_MS = 5_000;
 const WALLET_REFRESH_MS = 30_000;
 const CANDLE_CLOSE_GRACE_SEC = 2;
 const BRACKET_SYNC_MS = 5_000;
+const STALE_RECONCILIATION_MS = 60_000;
+
+function persistedSnapshot(record:any) {
+  return {tradeId:record.tradeId,direction:record.side==='SHORT'?'short':'long',source:record.source,attributionStatus:record.source==='bot'?'BOT_CONFIRMED':'MANUAL_CONFIRMED',entryPrice:record.actualEntryPrice??record.intendedEntryPrice,trigger:record.intendedEntryPrice,sl:record.initialSL,tp:record.takeProfit,contracts:record.contracts,ownedContracts:record.contracts,contractValue:record.contractValue,orderId:record.entryOrderId,clientOrderId:record.entryClientOrderId,entryFillIds:record.entryFillIds??[],openedAt:record.entryTime?.valueOf?.()??null,mixedPosition:false};
+}
+
+async function reconcileStaleBotTrades(lastPrice:number) {
+  const now=Date.now(); if(!product||now-lastStaleReconciliationAt<STALE_RECONCILIATION_MS) return; lastStaleReconciliationAt=now;
+  let unresolved:any[];
+  try { unresolved=await findUnresolvedBotTrades(Number(product.id)); }
+  catch(error:any){addTradeEvent('TRADE_HISTORY_RECONCILIATION_FAILED',{reason:'MONGODB_LOOKUP_FAILED',error:error?.message||String(error)});return;}
+  for(const record of unresolved){
+    addTradeEvent('STALE_OPEN_TRADE_RECONCILING',{tradeId:record.tradeId});
+    try {const start=toDeltaMicroseconds(Math.max(0,(record.entryTime?.valueOf?.()??now)-60_000));const history=await getFillsBounded(Number(product.id),start);if(!history.complete)throw new Error('Delta fill history pagination incomplete');const boundary=record.entryOrderId?findBotCloseBoundary({productId:Number(product.id),entryOrderId:record.entryOrderId,fills:history.result}):null;if(boundary==null)throw new Error('No proven zero-position fill boundary for stale OPEN trade');const saved=await persistClosedTrade({...persistedSnapshot(record),closedAtBoundary:boundary},Number(product.id),config.symbol,null);addTradeEvent('STALE_OPEN_TRADE_RECONCILED',{tradeId:saved.tradeId,financialStatus:saved.financialStatus});}
+    catch(error:any){const message=error?.message||String(error);try{await markTradeReconciling(record.tradeId,message);}catch{}addTradeEvent('TRADE_HISTORY_RECONCILIATION_FAILED',{tradeId:record.tradeId,error:message});}
+  }
+}
+
+async function reconcileStaleManualTrades(){
+  const now=Date.now();if(!product||now-lastManualReconciliationAt<STALE_RECONCILIATION_MS)return;lastManualReconciliationAt=now;
+  let unresolved:any[];try{unresolved=await findUnresolvedManualTrades(Number(product.id));}catch(error:any){addTradeEvent('TRADE_HISTORY_RECONCILIATION_FAILED',{source:'exchange_existing',reason:'MONGODB_LOOKUP_FAILED',error:error?.message||String(error)});return;}
+  for(const record of unresolved){addTradeEvent('STALE_MANUAL_TRADE_RECONCILING',{tradeId:record.tradeId});try{const start=toDeltaMicroseconds(Math.max(0,(record.entryTime?.valueOf?.()??now)-60_000)),history=await getFillsBounded(Number(product.id),start);if(!history.complete)throw new Error('Delta fill history pagination incomplete');const boundary=findTradeCloseBoundary({productId:Number(product.id),entryFillIds:record.entryFillIds??[],fills:history.result});if(boundary==null)throw new Error('No proven zero-position fill boundary for stale manual trade');const saved=await persistClosedTrade({...persistedSnapshot(record),closedAtBoundary:boundary},Number(product.id),config.symbol,null);addTradeEvent('STALE_MANUAL_TRADE_RECONCILED',{tradeId:saved.tradeId,financialStatus:saved.financialStatus});}catch(error:any){const message=error?.message||String(error);try{await markTradeReconciling(record.tradeId,message);}catch{}addTradeEvent('TRADE_HISTORY_RECONCILIATION_FAILED',{tradeId:record.tradeId,source:'exchange_existing',error:message});}}
+}
+
+function manualOpeningFills(currentSize:number,fills:any[]){
+  const sorted=fills.filter(f=>Number(f.product_id)===Number(product?.id)&&deltaTimestampMilliseconds(f.created_at)!=null).sort((a,b)=>(deltaTimestampMilliseconds(a.created_at)??0)-(deltaTimestampMilliseconds(b.created_at)??0));let balance=currentSize,boundary=sorted.length;
+  for(let index=sorted.length-1;index>=0;index--){const signed=Math.abs(Number(sorted[index].size||0))*(String(sorted[index].side).toLowerCase()==='buy'?1:-1),previous=balance-signed;if(Math.abs(previous)<1e-9){boundary=index;break;}balance=previous;}
+  if(boundary===sorted.length)return[];const side=currentSize>0?'buy':'sell',lifecycle=sorted.slice(boundary),entries=lifecycle.filter(f=>String(f.side).toLowerCase()===side),size=entries.reduce((n,f)=>n+Math.abs(Number(f.size||0)),0);return lifecycle.length===entries.length&&Math.abs(size-Math.abs(currentSize))<1e-9?entries:[];
+}
+
+function lifecycleBalance(entryFillIds:string[],fills:any[]){const ids=new Set(entryFillIds),sorted=fills.filter(f=>Number(f.product_id)===Number(product?.id)&&deltaTimestampMilliseconds(f.created_at)!=null).sort((a,b)=>(deltaTimestampMilliseconds(a.created_at)??0)-(deltaTimestampMilliseconds(b.created_at)??0)),start=sorted.findIndex(f=>ids.has(String(f.id)));if(start<0)return null;const seen=new Set<string>();let balance=0;for(const fill of sorted.slice(start)){if(ids.has(String(fill.id)))seen.add(String(fill.id));balance+=Math.abs(Number(fill.size||0))*(String(fill.side).toLowerCase()==='buy'?1:-1);}return seen.size===ids.size?balance:null;}
+
+async function retryActiveAttribution(positionSize:number){
+  const now=Date.now();if(!activeTrade||activeTrade.source!=='unattributed'||now-lastAttributionRetryAt<STALE_RECONCILIATION_MS)return;lastAttributionRetryAt=now;
+  let persistedBot:any=null,fills:any[]=[],orders:any[]=[],historyComplete=false;
+  try{persistedBot=await findOpenBotTrade(Number(product.id));}catch(error:any){addTradeEvent('TRADE_ATTRIBUTION_RETRY_PENDING',{productId:Number(product.id),approximateOpeningTime:activeTrade.adoptedAt??null,fillsInspected:0,ordersInspected:0,paginationComplete:'NO',botOrderMatch:'UNKNOWN',reason:`MongoDB lookup failed: ${error?.message||String(error)}`,retry:'ACTIVE'});return;}
+  try{const startMs=persistedBot?.entryTime?.valueOf?.()??Math.max(0,(activeTrade.adoptedAt??now)-30*24*60*60*1000),[fillHistory,orderHistory]=await Promise.all([getFillsBounded(Number(product.id),toDeltaMicroseconds(Math.max(0,startMs-60_000))),getOrderHistoryBounded(Number(product.id),toDeltaMicroseconds(Math.max(0,startMs-60_000)))]);fills=fillHistory.result;orders=orderHistory.result;historyComplete=fillHistory.complete&&orderHistory.complete;}catch(error:any){addTradeEvent('TRADE_ATTRIBUTION_RETRY_PENDING',{productId:Number(product.id),approximateOpeningTime:activeTrade.adoptedAt??null,fillsInspected:fills.length,ordersInspected:orders.length,paginationComplete:'NO',botOrderMatch:'UNKNOWN',reason:`Delta history failed: ${error?.message||String(error)}`,retry:'ACTIVE'});return;}
+  const ownership=resolvePositionOwnership({lookupFailed:false,currentSize:positionSize,productId:Number(product.id),persisted:persistedBot?{entryOrderId:persistedBot.entryOrderId,entryClientOrderId:persistedBot.entryClientOrderId,entryTime:persistedBot.entryTime,side:persistedBot.side,contracts:persistedBot.contracts}:null,fills,orders,historyComplete});
+  if(ownership.status==='BOT_CONFIRMED'&&persistedBot){activeTrade={...activeTrade,...persistedSnapshot(persistedBot),contracts:Math.abs(positionSize),positionSize,ownedContracts:ownership.botOwnedContracts,mixedPosition:ownership.mixedPosition,exchangeSync:activeTrade.exchangeSync};addTradeEvent('TRADE_ATTRIBUTION_RESOLVED',{tradeId:persistedBot.tradeId,source:'BOT',productId:Number(product.id),fillsInspected:fills.length,ordersInspected:orders.length});return;}
+  if(ownership.status==='MANUAL_CONFIRMED'){try{const saved=await persistOpenManualTrade({...activeTrade,source:'exchange_existing',attributionStatus:'MANUAL_CONFIRMED',contracts:Math.abs(positionSize),ownedContracts:Math.abs(positionSize)},Number(product.id),config.symbol,manualOpeningFills(positionSize,fills));activeTrade={...activeTrade,source:'exchange_existing',attributionStatus:'MANUAL_CONFIRMED',tradeId:saved.tradeId,entryFillIds:saved.entryFillIds,openedAt:saved.entryTime,entryPrice:saved.actualEntryPrice,contracts:Math.abs(positionSize),ownedContracts:Math.abs(positionSize),mixedPosition:false};addTradeEvent('TRADE_ATTRIBUTION_RESOLVED',{tradeId:saved.tradeId,source:'MANUAL',productId:Number(product.id),fillsInspected:fills.length,ordersInspected:orders.length});return;}catch(error:any){ownership.reason=`${ownership.reason}; OPEN persistence pending: ${error?.message||String(error)}`;}}
+  addTradeEvent('TRADE_ATTRIBUTION_RETRY_PENDING',{productId:Number(product.id),approximateOpeningTime:activeTrade.adoptedAt??null,fillsInspected:fills.length,ordersInspected:orders.length,paginationComplete:historyComplete?'YES':'NO',botOrderMatch:persistedBot?'CHECKED':'NO',reason:ownership.reason,retry:'ACTIVE'});
+}
 
 function upsertUiLog(candleTime:number, patch:any) {
   const i = uiLogs.findIndex((x:any) => x.candleTime === candleTime);
@@ -119,17 +167,59 @@ async function refreshPosition(lastPrice:number, force = false) {
   // entry price and bracket orders. No new setup/entry is allowed while it exists.
   if (positionSize !== 0 && !activeTrade) {
     const direction = positionSize > 0 ? 'long' : 'short';
-    activeTrade = {
+    let persistedBot:any = null,persistedManual:any=null;
+    let lookupFailed=false;
+    try { [persistedBot,persistedManual]=await Promise.all([findOpenBotTrade(Number(product.id)),findOpenManualTrade(Number(product.id))]); }
+    catch (error:any) { lookupFailed=true; addTradeEvent('TRADE_OWNERSHIP_LOOKUP_FAILED', { error:error?.message || String(error) }); }
+    let fills:any[]=[]; let orders:any[]=[]; let historyComplete=false;
+    try {const startMs=persistedBot?.entryTime?.valueOf?.()??persistedManual?.entryTime?.valueOf?.()??Date.now()-30*24*60*60*1000;const [fillHistory,orderHistory]=await Promise.all([getFillsBounded(Number(product.id),toDeltaMicroseconds(Math.max(0,startMs-60_000))),getOrderHistoryBounded(Number(product.id),toDeltaMicroseconds(Math.max(0,startMs-60_000)))]);fills=fillHistory.result;orders=orderHistory.result;historyComplete=fillHistory.complete&&orderHistory.complete;}
+    catch(error:any){addTradeEvent('TRADE_OWNERSHIP_EVIDENCE_FAILED',{error:error?.message||String(error)});}
+    const manualEntryIds=new Set<string>(persistedManual?.entryFillIds??[]),persistedManualFills=fills.filter(f=>manualEntryIds.has(String(f.id)));
+    const persistedManualBalance=persistedManual?lifecycleBalance(persistedManual.entryFillIds??[],fills):null;
+    const manualRestored=!!persistedManual&&historyComplete&&manualEntryIds.size>0&&persistedManualFills.length===manualEntryIds.size&&persistedManualBalance!=null&&Math.abs(persistedManualBalance-positionSize)<1e-9&&(persistedManual.side==='LONG'?positionSize>0:positionSize<0);
+    const ownership=manualRestored?{status:'MANUAL_CONFIRMED' as const,reason:'Persisted manual entry fill identity and current Delta position confirmed',botOwnedContracts:0,mixedPosition:false,staleBotClosed:false}:resolvePositionOwnership({lookupFailed,currentSize:positionSize,productId:Number(product.id),persisted:persistedBot?{entryOrderId:persistedBot.entryOrderId,entryClientOrderId:persistedBot.entryClientOrderId,entryTime:persistedBot.entryTime,side:persistedBot.side,contracts:persistedBot.contracts}:null,fills,orders,historyComplete});
+    const manualEntries=manualOpeningFills(positionSize,fills),manualOrderIds=[...new Set(manualEntries.map(f=>String(f.order_id)))],manualEntryOrderId=manualOrderIds.length===1?manualOrderIds[0]:null,manualEntryOrder=manualEntryOrderId?orders.find(o=>String(o.id)===manualEntryOrderId):null;
+    if(ownership.staleBotClosed&&persistedBot){void markTradeReconciling(persistedBot.tradeId,ownership.reason).catch(()=>{});addTradeEvent('STALE_OPEN_TRADE_RECONCILING',{tradeId:persistedBot.tradeId,reason:ownership.reason});}
+    activeTrade = ownership.status==='BOT_CONFIRMED' ? {
+      direction,
+      entryPrice:Number(position?.entry_price || persistedBot.actualEntryPrice || persistedBot.intendedEntryPrice || 0),
+      trigger:persistedBot.intendedEntryPrice,
+      sl:persistedBot.initialSL,
+      tp:persistedBot.takeProfit,
+      contracts:Math.abs(positionSize),
+      ownedContracts:ownership.botOwnedContracts,
+      contractValue:Number(persistedBot.contractValue || product?.contract_value || 0),
+      positionSize,
+      orderId:persistedBot.entryOrderId,
+      clientOrderId:persistedBot.entryClientOrderId,
+      openedAt:persistedBot.entryTime?.valueOf?.() ?? null,
+      source:'bot',
+      attributionStatus:'BOT_CONFIRMED',
+      mixedPosition:ownership.mixedPosition,
+      tradeId:persistedBot.tradeId,
+      exchangeSync:null
+    } : ownership.status==='MANUAL_CONFIRMED' ? {
       direction,
       entryPrice:Number(position?.entry_price || 0),
       sl:null,
       tp:null,
       contracts:Math.abs(positionSize),
+      ownedContracts:manualRestored?Math.abs(Number(persistedManual.contracts)):Math.abs(positionSize),
+      contractValue:Number(product?.contract_value || 0),
       positionSize,
-      orderId:null,
-      openedAt:null,
+      orderId:persistedManual?.entryOrderId??manualEntryOrderId,
+      clientOrderId:persistedManual?.entryClientOrderId??(manualEntryOrder?.client_order_id?String(manualEntryOrder.client_order_id):null),
+      openedAt:persistedManual?.entryTime?.valueOf?.()??null,
       source:'exchange_existing',
-      adoptedAt:Date.now(),
+      attributionStatus:'MANUAL_CONFIRMED',
+      adoptedAt:persistedManual?.createdAt?.valueOf?.()??Date.now(),
+      lastObservedAt:Date.now(),
+      mixedPosition:false,
+      tradeId:persistedManual?.tradeId??null,
+      entryFillIds:persistedManual?.entryFillIds??manualEntries.map(f=>String(f.id)),
+      exchangeSync:null
+    } : {
+      direction,entryPrice:Number(position?.entry_price||0),sl:null,tp:null,contracts:Math.abs(positionSize),ownedContracts:0,contractValue:Number(product?.contract_value||0),positionSize,orderId:null,openedAt:null,source:'unattributed',attributionStatus:ownership.status,adoptedAt:Date.now(),lastObservedAt:Date.now(),mixedPosition:true,
       exchangeSync:null
     };
     pending = null;
@@ -137,37 +227,63 @@ async function refreshPosition(lastPrice:number, force = false) {
       direction,
       positionSize,
       entryPrice:Number(position?.entry_price || 0),
-      source:'EXISTING_DELTA_POSITION'
+      source:ownership.status,
+      reason:ownership.reason,
+      productId:Number(product.id),
+      approximateOpeningTime:manualEntries.map(f=>deltaTimestampMilliseconds(f.created_at)).filter((v):v is number=>v!=null).sort((a,b)=>a-b)[0]??null,
+      fillsInspected:fills.length,
+      ordersInspected:orders.length,
+      paginationComplete:historyComplete?'YES':'NO',
+      botOrderMatch:ownership.status==='BOT_CONFIRMED'?'YES':'NO',
+      retry:ownership.status==='BOT_CONFIRMED'||ownership.status==='MANUAL_CONFIRMED'?'RESOLVED':'ACTIVE'
     });
+    if(activeTrade.source==='exchange_existing'&&!persistedManual){try{const saved=await persistOpenManualTrade(activeTrade,Number(product.id),config.symbol,manualEntries);activeTrade.tradeId=saved.tradeId;activeTrade.entryFillIds=saved.entryFillIds;activeTrade.openedAt=saved.entryTime;activeTrade.entryPrice=saved.actualEntryPrice;addTradeEvent('MANUAL_OPEN_TRADE_PERSISTED',{tradeId:saved.tradeId});}catch(error:any){addTradeEvent('MANUAL_OPEN_TRADE_PERSIST_FAILED',{productId:Number(product.id),fillsInspected:fills.length,ordersInspected:orders.length,paginationComplete:historyComplete?'YES':'NO',error:error?.message||String(error),retry:'ACTIVE'});}}
   }
 
   // Preserve the existing closed-trade streak logic for bot-created trades.
   // A position that existed before app startup is synchronized and displayed,
   // but its result is not added to the bot's daily loss streak.
   if (previousPositionSize !== 0 && positionSize === 0 && activeTrade) {
-    const tp = numeric(activeTrade.tp);
-    const isAdopted = activeTrade.source === 'exchange_existing';
-    const won = tp != null ? (activeTrade.direction === 'long' ? lastPrice >= tp : lastPrice <= tp) : false;
-    if (!isAdopted) {
-      if (won) lossStreak = 0;
-      else lossStreak += 1;
+    const isBot = activeTrade.source === 'bot' && activeTrade.attributionStatus === 'BOT_CONFIRMED';
+    let exitClassification:any = { outcome:'UNKNOWN', exitReason:'UNKNOWN', reason:'Exit ownership is not confirmed' };
+    if (isBot) {
+      try {
+        const startMs=Math.max(0,(activeTrade.openedAt??Date.now())-60_000);
+        const [fillHistory,orderHistory]=await Promise.all([getFillsBounded(Number(product.id),toDeltaMicroseconds(startMs)),getOrderHistoryBounded(Number(product.id),toDeltaMicroseconds(startMs))]);
+        exitClassification=classifyBotExitEvidence({side:activeTrade.direction==='short'?'SHORT':'LONG',productId:Number(product.id),ownedContracts:Number(activeTrade.ownedContracts||0),entryOrderId:String(activeTrade.orderId||''),fills:fillHistory.result,orders:orderHistory.result,windowStart:startMs,windowEnd:Date.now()+5_000,historyComplete:fillHistory.complete&&orderHistory.complete,mixedPosition:activeTrade.mixedPosition===true});
+      } catch(error:any) {
+        exitClassification={outcome:'UNKNOWN',exitReason:'UNKNOWN',reason:error?.message||String(error)};
+      }
+      lossStreak=applyDailyLossOutcome(lossStreak,exitClassification.outcome);
+      addTradeEvent('BOT_EXIT_OUTCOME_CLASSIFIED',{outcome:exitClassification.outcome,exitReason:exitClassification.exitReason,actualExitPrice:exitClassification.actualExitPrice??null,reason:exitClassification.reason,lossStreak});
     }
     addTradeEvent('POSITION_CLOSED', {
       direction:activeTrade.direction,
       lastPrice,
-      syncedTp:tp,
-      source:isAdopted?'EXISTING_DELTA_POSITION':'BOT',
-      classifiedAs:isAdopted?'EXTERNAL_POSITION_CLOSED':(won?'WIN':'LOSS_OR_MANUAL_CLOSE')
+      syncedTp:numeric(activeTrade.tp),
+      source:isBot?'BOT':activeTrade.source==='exchange_existing'?'EXISTING_DELTA_POSITION':'UNATTRIBUTED',
+      classifiedAs:isBot?exitClassification.outcome:activeTrade.source==='exchange_existing'?'EXTERNAL_POSITION_CLOSED':'OWNERSHIP_UNCERTAIN',
+      exitReason:isBot?exitClassification.exitReason:'UNKNOWN'
     });
+    const closedTrade = { ...activeTrade };
+    void persistClosedTrade(closedTrade, Number(product.id), config.symbol, lastPrice)
+      .then(saved => {addTradeEvent('TRADE_HISTORY_PERSISTED', { tradeId:saved.tradeId, source:saved.source, financialStatus:saved.financialStatus });if(saved.reconciliationError)addTradeEvent('TRADE_FILL_ATTRIBUTION_UNCERTAIN',{tradeId:saved.tradeId,reason:saved.reconciliationError});if(saved.financialStatus!=='actual')addTradeEvent('TRADE_FINANCIALS_PARTIAL',{tradeId:saved.tradeId,financialStatus:saved.financialStatus});})
+      .catch(async error => {const message=error?.message||String(error);if(closedTrade.tradeId){try{await markTradeReconciling(closedTrade.tradeId,message);}catch{}}addTradeEvent(message.includes('RECONCILIATION_UNRESOLVED')?'TRADE_HISTORY_RECONCILIATION_UNRESOLVED':'TRADE_HISTORY_RECONCILIATION_FAILED', { source:closedTrade.source,tradeId:closedTrade.tradeId??null,error:message,retry:closedTrade.tradeId?'ACTIVE':'UNAVAILABLE_WITHOUT_STABLE_EXCHANGE_ID' });});
     activeTrade = null;
   }
 
   // Keep the adopted/live trade details synchronized with the current Delta position.
   if (positionSize !== 0 && activeTrade) {
+    if(previousPositionSize!==0&&Math.sign(positionSize)!==Math.sign(previousPositionSize)){activeTrade.mixedPosition=true;if(activeTrade.tradeId)void markTradeReconciling(activeTrade.tradeId,'Position reversal/netting requires manual reconciliation').catch(()=>{});addTradeEvent('TRADE_ATTRIBUTION_RETRY_PENDING',{tradeId:activeTrade.tradeId??null,productId:Number(product.id),reason:'Position reversal/netting crossed the adopted lifecycle boundary',retry:'ACTIVE'});}
+    if(activeTrade.source==='bot'&&Math.abs(positionSize)!==Number(activeTrade.ownedContracts||0)) activeTrade.mixedPosition=true;
     activeTrade.positionSize = positionSize;
     activeTrade.contracts = Math.abs(positionSize);
     activeTrade.entryPrice = Number(position?.entry_price || activeTrade.entryPrice || 0);
+    activeTrade.lastObservedAt=Date.now();
+    await retryActiveAttribution(positionSize);
   }
+
+  if(positionSize===0&&!activeTrade){void reconcileStaleBotTrades(lastPrice);void reconcileStaleManualTrades();}
 
   cachedPosition = position;
   cachedPositionSize = positionSize;
@@ -480,7 +596,10 @@ async function cycle() {
                 });
               }
 
-              activeTrade = { direction:pending.direction, entryPrice:pending.trigger, sl, tp, contracts, positionSize:pending.direction === 'long' ? contracts : -contracts, orderId:order?.result?.id, openedAt:Date.now(), source:'bot', exchangeSync:null };
+              activeTrade = { direction:pending.direction, entryPrice:pending.trigger, trigger:pending.trigger, sl, tp, contracts, ownedContracts:contracts, contractValue, positionSize:pending.direction === 'long' ? contracts : -contracts, orderId:order?.result?.id, clientOrderId:oid, openedAt:Date.now(), lastObservedAt:Date.now(), riskAmount, takerRate, gstPct:config.gstPct, source:'bot', attributionStatus:'BOT_CONFIRMED', mixedPosition:false, exchangeSync:null };
+              void persistOpenBotTrade(activeTrade, Number(product.id), config.symbol)
+                .then(() => addTradeEvent('BOT_OWNERSHIP_PERSISTED', { orderId:order?.result?.id ?? null }))
+                .catch(error => addTradeEvent('TRADE_HISTORY_PERSISTENCE_FAILED', { source:'bot', error:error?.message || String(error) }));
               addTradeEvent('BRACKET_SENT', { orderId:order?.result?.id ?? null, sl, tp, triggerMethod });
 
               // Force a fresh position snapshot on the next cycle.
@@ -573,7 +692,9 @@ async function cycle() {
       : cachedPositionSize !== 0
         ? activeTrade?.source === 'exchange_existing'
           ? { action:'ACTIVE', reason:'EXISTING_POSITION', source:'exchange_existing', at:new Date().toISOString() }
-          : { action:'ENTRY', reason:'ALGO_POSITION_OPEN', source:activeTrade?.source || 'bot', at:new Date().toISOString() }
+          : activeTrade?.source === 'bot'
+            ? { action:'ENTRY', reason:'ALGO_POSITION_OPEN', source:'bot', at:new Date().toISOString() }
+            : { action:'ACTIVE', reason:'OWNERSHIP_UNCERTAIN', source:'unattributed', at:new Date().toISOString() }
         : { action:decision.action, reason:decision.reason || (pending ? 'WAITING_FOR_BREAKOUT' : 'NO_VALID_SETUP'), at:new Date().toISOString() },
     tradeEvents,
     logs:uiLogs

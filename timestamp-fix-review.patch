@@ -1,0 +1,223 @@
+diff --git a/lib/trades/reconciliation.ts b/lib/trades/reconciliation.ts
+new file mode 100644
+index 0000000..305703d
+--- /dev/null
++++ b/lib/trades/reconciliation.ts
+@@ -0,0 +1,157 @@
++import crypto from 'node:crypto';
++import type { AttributionStatus, FinancialStatus, TradeSide } from '../../models/Trade';
++
++export interface DeltaFill { id?: string|number; order_id?: string|number; client_order_id?: string; product_id?: number; product_symbol?: string; side?: string; price?: string|number; size?: string|number; commission?: string|number; created_at?: string|number; }
++export interface DeltaOrder { id?:string|number; client_order_id?:string; product_id?:number; side?:string; reduce_only?:boolean; stop_order_type?:string; created_at?:string|number; }
++
++const id=(value:unknown)=>value==null?null:String(value);
++export function deltaTimestampMilliseconds(value:unknown):number|null {
++  if(value==null||value==='') return null;
++  const text=String(value).trim();
++  if(!text) return null;
++  if(/^\d+$/.test(text)) {
++    const numeric=Number(text);
++    if(!Number.isSafeInteger(numeric)) return null;
++    if(numeric>=1_000_000_000_000_000) return Math.trunc(numeric/1_000);
++    if(numeric>=1_000_000_000_000) return numeric;
++    return null;
++  }
++  const parsed=Date.parse(text);
++  return Number.isFinite(parsed)?parsed:null;
++}
++const time=deltaTimestampMilliseconds;
++const signedSize=(fill:DeltaFill)=>Math.abs(Number(fill.size||0))*(String(fill.side).toLowerCase()==='buy'?1:-1);
++const nearly=(a:number,b:number)=>Math.abs(a-b)<1e-9;
++
++export type OwnershipResolution = {status:AttributionStatus;reason:string;botOwnedContracts:number;mixedPosition:boolean;staleBotClosed:boolean};
++export function resolvePositionOwnership(input:{lookupFailed:boolean;currentSize:number;productId:number;persisted?:{entryOrderId:string|null;entryClientOrderId:string|null;entryTime:Date|null;side:TradeSide;contracts:number|null}|null;fills:DeltaFill[];orders:DeltaOrder[];historyComplete:boolean}):OwnershipResolution {
++  const unknown=(status:AttributionStatus,reason:string,staleBotClosed=false):OwnershipResolution=>({status,reason,botOwnedContracts:0,mixedPosition:false,staleBotClosed});
++  if(input.lookupFailed) return unknown('LOOKUP_FAILED','MongoDB ownership lookup failed');
++  const fills=input.fills.filter(f=>Number(f.product_id)===input.productId&&time(f.created_at)!=null).sort((a,b)=>(time(a.created_at)??0)-(time(b.created_at)??0));
++  const orderById=new Map(input.orders.filter(o=>Number(o.product_id)===input.productId).map(o=>[id(o.id),o]));
++  if(input.persisted) {
++    const entryId=input.persisted.entryOrderId;
++    if(!entryId) return unknown('UNKNOWN','Persisted bot record has no entry order ID');
++    const order=orderById.get(entryId);
++    if(!order||id(order.client_order_id)!==input.persisted.entryClientOrderId||!String(order.client_order_id||'').startsWith('ema-')) return unknown('UNKNOWN','Persisted entry order is not confirmed by Delta');
++    const entryIndexes=fills.map((f,index)=>id(f.order_id)===entryId?index:-1).filter(index=>index>=0);
++    if(!entryIndexes.length) return unknown('UNKNOWN','Persisted entry fills are absent from bounded Delta history');
++    const start=entryIndexes[0]; let balance=0, closedBeforeEnd=false, mixed=false;
++    for(let index=start;index<fills.length;index++) {
++      const fill=fills[index]; balance+=signedSize(fill);
++      if(id(fill.order_id)!==entryId&&String(fill.side).toLowerCase()===(input.persisted.side==='LONG'?'buy':'sell')) mixed=true;
++      if(nearly(balance,0)&&index<fills.length-1) closedBeforeEnd=true;
++    }
++    if(closedBeforeEnd) return unknown('UNKNOWN','Persisted bot lifecycle reached zero before later same-symbol activity',true);
++    if(!input.historyComplete) return unknown('UNKNOWN','Delta history pagination was incomplete');
++    if(!nearly(balance,input.currentSize)) return unknown('UNKNOWN','Exchange fill lifecycle does not match current position');
++    const expectedSign=input.persisted.side==='LONG'?1:-1;
++    if(Math.sign(input.currentSize)!==expectedSign) return unknown('UNKNOWN','Current position side differs from persisted bot entry');
++    return {status:'BOT_CONFIRMED',reason:'Delta entry order and uninterrupted fill lifecycle confirmed',botOwnedContracts:Math.min(Math.abs(input.currentSize),Math.abs(input.persisted.contracts??0)),mixedPosition:mixed||Math.abs(input.currentSize)>Math.abs(input.persisted.contracts??0),staleBotClosed:false};
++  }
++  if(!input.historyComplete||!fills.length) return unknown('UNKNOWN','Complete current-position lifecycle is unavailable');
++  let balance=input.currentSize; let boundary=fills.length;
++  for(let index=fills.length-1;index>=0;index--){const previous=balance-signedSize(fills[index]);if(nearly(previous,0)){boundary=index;break;}balance=previous;}
++  if(boundary===fills.length) return unknown('UNKNOWN','No reliable zero-to-open lifecycle boundary found');
++  const lifecycle=fills.slice(boundary); const openingSide=input.currentSize>0?'buy':'sell';
++  const openingOrders=lifecycle.filter(f=>String(f.side).toLowerCase()===openingSide).map(f=>orderById.get(id(f.order_id))).filter(Boolean) as DeltaOrder[];
++  if(!openingOrders.length||openingOrders.some(o=>String(o.client_order_id||'').startsWith('ema-'))) return unknown('UNKNOWN','Lifecycle contains bot-generated or unverified opening orders');
++  return {status:'MANUAL_CONFIRMED',reason:'Complete non-bot Delta lifecycle confirmed',botOwnedContracts:0,mixedPosition:false,staleBotClosed:false};
++}
++
++export type FillAttribution={entryFills:DeltaFill[];exitFills:DeltaFill[];complete:boolean;ambiguous:boolean;reason:string};
++export type BotExitOutcome='WIN'|'LOSS'|'BREAKEVEN'|'UNKNOWN';
++export type BotExitClassification={outcome:BotExitOutcome;exitReason:'SL'|'TP'|'MANUAL_CLOSE'|'UNKNOWN';actualEntryPrice:number|null;actualExitPrice:number|null;reason:string};
++
++export function classifyBotExitEvidence(input:{side:TradeSide;productId:number;ownedContracts:number;entryOrderId:string;fills:DeltaFill[];orders:DeltaOrder[];windowStart:number;windowEnd:number;historyComplete:boolean;mixedPosition:boolean}):BotExitClassification {
++  const unknown=(reason:string):BotExitClassification=>({outcome:'UNKNOWN',exitReason:'UNKNOWN',actualEntryPrice:null,actualExitPrice:null,reason});
++  if(!input.historyComplete) return unknown('Delta exit history is incomplete');
++  if(input.mixedPosition) return unknown('Same-symbol bot/manual quantity was mixed');
++  const fills=input.fills.filter(f=>Number(f.product_id)===input.productId&&time(f.created_at)!=null&&(time(f.created_at) as number)>=input.windowStart&&(time(f.created_at) as number)<=input.windowEnd).sort((a,b)=>(time(a.created_at)??0)-(time(b.created_at)??0));
++  const entryFills=fills.filter(f=>id(f.order_id)===input.entryOrderId);
++  const entrySize=entryFills.reduce((total,fill)=>total+Math.abs(Number(fill.size||0)),0);
++  if(!entryFills.length||!nearly(entrySize,input.ownedContracts)) return unknown('Exact bot entry fills are unavailable');
++  const entryBoundary=Math.max(...entryFills.map(f=>time(f.created_at)??0));
++  const exitSide=input.side==='LONG'?'sell':'buy';
++  const lifecycle=fills.filter(f=>(time(f.created_at)??0)>=entryBoundary);
++  if(lifecycle.some(f=>id(f.order_id)!==input.entryOrderId&&String(f.side).toLowerCase()!==exitSide)) return unknown('Bot lifecycle contains an unattributed same-side addition');
++  const exitFills=lifecycle.filter(f=>id(f.order_id)!==input.entryOrderId&&String(f.side).toLowerCase()===exitSide);
++  let exitSize=0;
++  for(const fill of exitFills){const size=Math.abs(Number(fill.size||0));if(size<=0||exitSize+size>input.ownedContracts)return unknown('Exit fill crosses bot-owned quantity');exitSize+=size;}
++  if(!exitFills.length||!nearly(exitSize,input.ownedContracts)) return unknown('Exact bot exit quantity is unavailable');
++  const orderById=new Map(input.orders.filter(o=>Number(o.product_id)===input.productId).map(o=>[id(o.id),o]));
++  const exitOrders=exitFills.map(fill=>orderById.get(id(fill.order_id)));
++  if(exitOrders.some(order=>!order)) return unknown('Exit order evidence is unavailable');
++  const reasons=new Set(exitOrders.map(order=>order?.stop_order_type==='take_profit_order'?'TP':order?.stop_order_type==='stop_loss_order'?'SL':'MANUAL_CLOSE'));
++  if(reasons.size!==1) return unknown('Exit fills have mixed exit reasons');
++  const actualEntryPrice=weightedAverage(entryFills), actualExitPrice=weightedAverage(exitFills);
++  const exitReason=[...reasons][0] as 'SL'|'TP'|'MANUAL_CLOSE';
++  if(exitReason==='TP') return {outcome:'WIN',exitReason,actualEntryPrice,actualExitPrice,reason:'Delta take-profit order and fills confirmed'};
++  if(exitReason==='SL') return {outcome:'LOSS',exitReason,actualEntryPrice,actualExitPrice,reason:'Delta stop-loss order and fills confirmed'};
++  if(actualEntryPrice==null||actualExitPrice==null) return unknown('Manual close prices are unavailable');
++  const gross=grossPnL(input.side,actualEntryPrice,actualExitPrice,1);
++  return {outcome:gross!>0?'WIN':gross!<0?'LOSS':'BREAKEVEN',exitReason:'MANUAL_CLOSE',actualEntryPrice,actualExitPrice,reason:'Exact manual-close fills determine realized gross outcome'};
++}
++
++export function applyDailyLossOutcome(currentStreak:number,outcome:BotExitOutcome){return outcome==='WIN'?0:outcome==='LOSS'?currentStreak+1:currentStreak;}
++
++export function findBotCloseBoundary(input:{productId:number;entryOrderId:string;fills:DeltaFill[]}) {
++  const fills=input.fills.filter(f=>Number(f.product_id)===input.productId&&time(f.created_at)!=null).sort((a,b)=>(time(a.created_at)??0)-(time(b.created_at)??0));
++  const start=fills.findIndex(f=>id(f.order_id)===input.entryOrderId); if(start<0) return null;
++  let balance=0;
++  for(let index=start;index<fills.length;index++){balance+=signedSize(fills[index]);if(index>start&&nearly(balance,0))return time(fills[index].created_at);}
++  return null;
++}
++
++export function attributeTradeFills(input:{source:'bot'|'exchange_existing';side:TradeSide;productId:number;ownedContracts:number;entryOrderId:string|null;fills:DeltaFill[];orders:DeltaOrder[];windowStart:number;windowEnd:number;historyComplete:boolean;mixedPosition:boolean}):FillAttribution {
++  const relevant=input.fills.filter(f=>Number(f.product_id)===input.productId&&time(f.created_at)!=null&&(time(f.created_at) as number)>=input.windowStart&&(time(f.created_at) as number)<=input.windowEnd).sort((a,b)=>(time(a.created_at)??0)-(time(b.created_at)??0));
++  const orderById=new Map(input.orders.filter(o=>Number(o.product_id)===input.productId).map(o=>[id(o.id),o]));
++  const entryFills=input.source==='bot'&&input.entryOrderId?relevant.filter(f=>id(f.order_id)===input.entryOrderId):[];
++  const exitSide=input.side==='LONG'?'sell':'buy';
++  const entryBoundary=input.source==='bot'&&entryFills.length?Math.max(...entryFills.map(f=>time(f.created_at)??0)):input.windowStart;
++  const lifecycleFills=relevant.filter(f=>(time(f.created_at)??0)>=(input.source==='bot'?entryBoundary:input.windowStart));
++  const candidates=lifecycleFills.filter(f=>String(f.side).toLowerCase()===exitSide&&id(f.order_id)!==input.entryOrderId);
++  if(!input.historyComplete) return {entryFills,exitFills:[],complete:false,ambiguous:true,reason:'Delta history pagination incomplete'};
++  if(input.mixedPosition) return {entryFills,exitFills:[],complete:false,ambiguous:true,reason:'Same-symbol manual/bot quantity was mixed'};
++  if(input.source==='bot'&&(!entryFills.length||!nearly(entryFills.reduce((n,f)=>n+Math.abs(Number(f.size||0)),0),input.ownedContracts))) return {entryFills,exitFills:[],complete:false,ambiguous:true,reason:'Bot entry fill coverage is incomplete'};
++  if(input.source==='bot'&&lifecycleFills.some(f=>id(f.order_id)!==input.entryOrderId&&String(f.side).toLowerCase()!==(input.side==='LONG'?'sell':'buy'))) return {entryFills,exitFills:[],complete:false,ambiguous:true,reason:'Bot lifecycle contains an unattributed same-side addition'};
++  if(input.source==='exchange_existing'&&relevant.some(f=>String(f.side).toLowerCase()!==exitSide)) return {entryFills:[],exitFills:[],complete:false,ambiguous:true,reason:'Manual close window contains additions or reversal activity'};
++  let total=0; const exitFills:DeltaFill[]=[];
++  for(const fill of candidates){const size=Math.abs(Number(fill.size||0));if(size<=0||total+size>input.ownedContracts) return {entryFills,exitFills:[],complete:false,ambiguous:true,reason:'Exit fill crosses the reliably owned quantity boundary'};const order=orderById.get(id(fill.order_id));if(!order) return {entryFills,exitFills:[],complete:false,ambiguous:true,reason:'Exit order evidence is unavailable'};if(input.source==='bot'&&order.reduce_only!==true&&!order.stop_order_type) return {entryFills,exitFills:[],complete:false,ambiguous:true,reason:'Bot exit order is not proven reduce-only or protective'};exitFills.push(fill);total+=size;}
++  if(!exitFills.length||!nearly(total,input.ownedContracts)) return {entryFills,exitFills:[],complete:false,ambiguous:true,reason:'Exact exit quantity is not attributable'};
++  return {entryFills,exitFills,complete:true,ambiguous:false,reason:'Exact lifecycle quantity and order evidence confirmed'};
++}
++
++const finite = (value: unknown): number|null => { const n = Number(value); return value !== null && value !== '' && Number.isFinite(n) ? n : null; };
++export function weightedAverage(fills: DeltaFill[]): number|null {
++  let value = 0, size = 0;
++  for (const fill of fills) { const p=finite(fill.price), q=finite(fill.size); if (p == null || q == null || q <= 0) continue; value += p*q; size += q; }
++  return size ? value/size : null;
++}
++export function aggregateCommission(fills: DeltaFill[]): number|null {
++  if (!fills.length) return null;
++  let total=0;
++  for (const fill of fills) { const fee=finite(fill.commission); if (fee == null) return null; total += fee; }
++  return total;
++}
++export function grossPnL(side: TradeSide, entry:number|null, exit:number|null, quantity:number|null): number|null {
++  if (entry == null || exit == null || quantity == null) return null;
++  return (side === 'LONG' ? exit-entry : entry-exit) * quantity;
++}
++export function stableTradeId(source:string, productId:number, entryOrderId:string|null, entryFillIds:string[], exitFillIds:string[]): string|null {
++  const identity = source==='bot'&&entryOrderId ? `entry-order:${entryOrderId}` : exitFillIds.length ? `exit:${[...exitFillIds].sort().join(',')}` : entryOrderId ? `entry-order:${entryOrderId}` : entryFillIds.length ? `entry:${[...entryFillIds].sort().join(',')}` : null;
++  if (!identity) return null;
++  return `${source}:${productId}:${crypto.createHash('sha256').update(identity).digest('hex').slice(0,32)}`;
++}
++export function financials(input:{side:TradeSide; entry:number|null; exit:number|null; quantity:number|null; entryFills:DeltaFill[]; exitFills:DeltaFill[]; estimatedBrokerage?:number|null; estimatedGST?:number|null}) {
++  const gross = grossPnL(input.side,input.entry,input.exit,input.quantity);
++  const brokerage = input.entryFills.length && input.exitFills.length ? aggregateCommission([...input.entryFills,...input.exitFills]) : null;
++  const GST = null; // Delta fills document commission, but no attributable GST field.
++  const otherCharges = null;
++  const totalCharges = brokerage != null && GST != null && otherCharges != null ? brokerage+GST+otherCharges : null;
++  const netPnL = gross != null && totalCharges != null ? gross-totalCharges : null;
++  const hasPrices = input.entry != null && input.exit != null && input.quantity != null;
++  const financialStatus:FinancialStatus = hasPrices && totalCharges != null ? 'actual' : hasPrices ? 'partial' : (input.estimatedBrokerage != null || input.estimatedGST != null) ? 'estimated' : 'unavailable';
++  const estimatedTotalCharges = input.estimatedBrokerage != null && input.estimatedGST != null ? input.estimatedBrokerage+input.estimatedGST : null;
++  return {grossPnL:gross,brokerage,GST,otherCharges,totalCharges,netPnL,estimatedBrokerage:input.estimatedBrokerage??null,estimatedGST:input.estimatedGST??null,estimatedTotalCharges,estimatedNetPnL:gross != null && estimatedTotalCharges != null ? gross-estimatedTotalCharges:null,financialStatus};
++}
+diff --git a/tests/trades.test.ts b/tests/trades.test.ts
+new file mode 100644
+index 0000000..a229f77
+--- /dev/null
++++ b/tests/trades.test.ts
+@@ -0,0 +1,54 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++import { NextRequest } from 'next/server';
++import { aggregateCommission, applyDailyLossOutcome, attributeTradeFills, classifyBotExitEvidence, deltaTimestampMilliseconds, financials, findBotCloseBoundary, grossPnL, resolvePositionOwnership, stableTradeId, weightedAverage } from '../lib/trades/reconciliation';
++import { boundedHistory, toDeltaMicroseconds } from '../lib/delta';
++import { persistClosedTrade, persistOpenBotTrade, type TradePersistenceDependencies } from '../lib/trades/persistence';
++import { calculateStats } from '../lib/trades/statistics';
++import type { TradeDocument } from '../models/Trade';
++
++const row=(source:'bot'|'exchange_existing',gross:number,brokerage:number|null,GST:number|null):TradeDocument=>({tradeId:`${source}-${gross}`,symbol:'XAUTUSD',productId:1,side:'LONG',source,attributionStatus:source==='bot'?'BOT_CONFIRMED':'MANUAL_CONFIRMED',status:'CLOSED',entryTime:new Date(),intendedEntryPrice:100,actualEntryPrice:100,quantity:1,contracts:1,contractValue:1,initialSL:90,takeProfit:120,exitTime:new Date(),intendedExitPrice:100+gross,actualExitPrice:100+gross,exitReason:'UNKNOWN',grossPnL:gross,brokerage,GST,otherCharges:GST==null?null:0,totalCharges:brokerage!=null&&GST!=null?brokerage+GST:null,netPnL:brokerage!=null&&GST!=null?gross-brokerage-GST:null,estimatedBrokerage:null,estimatedGST:null,estimatedTotalCharges:null,estimatedNetPnL:null,realizedR:brokerage!=null&&GST!=null?gross/10:null,entryOrderId:'1',exitOrderId:'2',entryClientOrderId:null,exitClientOrderId:null,entryFillIds:['1'],exitFillIds:['2'],financialStatus:brokerage!=null&&GST!=null?'actual':'partial',feeDataSource:'delta_fills_commission',priceDataSource:'delta_weighted_fills',attributionNote:null,reconciliationError:null,createdAt:new Date(),updatedAt:new Date(),reconciledAt:new Date()});
++
++test('LONG and SHORT gross P/L signs are correct',()=>{assert.equal(grossPnL('LONG',100,110,2),20);assert.equal(grossPnL('LONG',100,90,2),-20);assert.equal(grossPnL('SHORT',100,90,2),20);assert.equal(grossPnL('SHORT',100,110,2),-20);});
++test('weighted fills and actual commission aggregate once',()=>{const fills=[{price:'100',size:1,commission:'0.1'},{price:'110',size:3,commission:'0.2'}];assert.equal(weightedAverage(fills),107.5);assert.ok(Math.abs((aggregateCommission(fills)??0)-0.3)<1e-12);});
++test('actual and estimated charges are never silently mixed',()=>{const value=financials({side:'LONG',entry:100,exit:110,quantity:2,entryFills:[{commission:'0.1'}],exitFills:[{commission:'0.2'}],estimatedBrokerage:0.5,estimatedGST:0.09});assert.equal(value.brokerage,0.30000000000000004);assert.equal(value.GST,null);assert.equal(value.totalCharges,null);assert.equal(value.netPnL,null);assert.equal(value.estimatedTotalCharges,0.59);assert.equal(value.financialStatus,'partial');});
++test('missing financial data does not create fake actual values',()=>{const value=financials({side:'LONG',entry:100,exit:110,quantity:1,entryFills:[],exitFills:[]});assert.equal(value.brokerage,null);assert.equal(value.GST,null);assert.equal(value.netPnL,null);});
++test('unknown commission stays unknown and estimates remain separate',()=>{const value=financials({side:'LONG',entry:100,exit:110,quantity:1,entryFills:[{commission:'0.1'}],exitFills:[{}],estimatedBrokerage:0.25,estimatedGST:0.045});assert.equal(value.brokerage,null);assert.equal(value.estimatedBrokerage,0.25);assert.equal(value.GST,null);assert.equal(value.estimatedGST,0.045);assert.equal(value.financialStatus,'partial');});
++test('stable exchange identity is deterministic and never timestamp-only',()=>{assert.equal(stableTradeId('bot',1,null,[],[]),null);assert.equal(stableTradeId('bot',1,'99',[],[]),stableTradeId('bot',1,'99',[],[]));assert.notEqual(stableTradeId('bot',1,'99',[],[]),stableTradeId('exchange_existing',1,'99',[],[]));});
++test('bot/manual/account statistics remain separate and additive',()=>{const rows=[row('bot',10,1,0.18),row('bot',-5,0.5,0.09),row('exchange_existing',8,0.8,0.144)];const bot=calculateStats(rows,'bot'),manual=calculateStats(rows,'exchange_existing'),account=calculateStats(rows);assert.equal(bot.totalTrades,2);assert.equal(manual.totalTrades,1);assert.equal(account.totalTrades,bot.totalTrades+manual.totalTrades);assert.equal(account.winningTrades,bot.winningTrades+manual.winningTrades);assert.equal(account.losingTrades,bot.losingTrades+manual.losingTrades);for(const key of ['grossPnL','brokerage','GST','totalCharges','netPnL'] as const)assert.ok(Math.abs(account[key]-bot[key]-manual[key])<1e-12, key);});
++test('trade APIs reject unauthenticated requests before database access',async()=>{const history=await import('../app/api/trades/route');const stats=await import('../app/api/trades/stats/route');assert.equal((await history.GET(new NextRequest('http://localhost/api/trades'))).status,401);assert.equal((await stats.GET(new NextRequest('http://localhost/api/trades/stats'))).status,401);});
++
++const botOrder={id:'entry',client_order_id:'ema-123',product_id:1,side:'buy'};
++const fill=(id:string,order_id:string,side:'buy'|'sell',size:number,second:number,commission='0.1')=>({id,order_id,product_id:1,side,size,price:side==='buy'?100:110,commission,created_at:new Date(second*1000).toISOString()});
++test('ownership lookup failure is never classified manual',()=>{assert.equal(resolvePositionOwnership({lookupFailed:true,currentSize:5,productId:1,persisted:null,fills:[],orders:[],historyComplete:false}).status,'LOOKUP_FAILED');});
++test('valid persisted bot ownership requires order and uninterrupted fills',()=>{const result=resolvePositionOwnership({lookupFailed:false,currentSize:5,productId:1,persisted:{entryOrderId:'entry',entryClientOrderId:'ema-123',entryTime:new Date(1000),side:'LONG',contracts:5},fills:[fill('e','entry','buy',5,2)],orders:[botOrder],historyComplete:true});assert.equal(result.status,'BOT_CONFIRMED');assert.equal(result.botOwnedContracts,5);});
++test('direction match alone cannot restore bot and stale lifecycle cannot claim manual position',()=>{const persisted={entryOrderId:'entry',entryClientOrderId:'ema-123',entryTime:new Date(1000),side:'LONG' as const,contracts:5};assert.equal(resolvePositionOwnership({lookupFailed:false,currentSize:5,productId:1,persisted,fills:[],orders:[botOrder],historyComplete:true}).status,'UNKNOWN');const stale=resolvePositionOwnership({lookupFailed:false,currentSize:5,productId:1,persisted,fills:[fill('e','entry','buy',5,2),fill('x','close','sell',5,3),fill('m','manual','buy',5,4)],orders:[botOrder,{id:'close',product_id:1},{id:'manual',product_id:1,client_order_id:'manual'}],historyComplete:true});assert.equal(stale.status,'UNKNOWN');assert.equal(stale.staleBotClosed,true);});
++test('complete non-bot lifecycle can be classified manual',()=>{const result=resolvePositionOwnership({lookupFailed:false,currentSize:2,productId:1,persisted:null,fills:[fill('m','manual','buy',2,4)],orders:[{id:'manual',product_id:1,client_order_id:'user-order'}],historyComplete:true});assert.equal(result.status,'MANUAL_CONFIRMED');});
++test('strict fill attribution accepts exact multiple bot exits',()=>{const result=attributeTradeFills({source:'bot',side:'LONG',productId:1,ownedContracts:5,entryOrderId:'entry',fills:[fill('e','entry','buy',5,2),fill('x1','exit1','sell',2,3),fill('x2','exit2','sell',3,4)],orders:[botOrder,{id:'exit1',product_id:1,reduce_only:true},{id:'exit2',product_id:1,stop_order_type:'take_profit_order'}],windowStart:1000,windowEnd:5000,historyComplete:true,mixedPosition:false});assert.equal(result.complete,true);assert.equal(weightedAverage(result.exitFills),110);assert.ok(Math.abs((aggregateCommission([...result.entryFills,...result.exitFills])??0)-0.3)<1e-12);});
++test('unrelated, outside-window, wrong-order and oversized exit fills are rejected',()=>{const base={source:'bot' as const,side:'LONG' as const,productId:1,ownedContracts:5,entryOrderId:'entry',orders:[botOrder,{id:'exit',product_id:1,reduce_only:true}],windowStart:1000,windowEnd:5000,historyComplete:true,mixedPosition:false};assert.equal(attributeTradeFills({...base,fills:[fill('e','entry','buy',5,2),fill('outside','exit','sell',5,9)]}).complete,false);assert.equal(attributeTradeFills({...base,fills:[fill('e','entry','buy',5,2),fill('wrong','missing','sell',5,3)]}).complete,false);assert.equal(attributeTradeFills({...base,fills:[fill('e','entry','buy',5,2),fill('large','exit','sell',7,3)]}).ambiguous,true);assert.equal(attributeTradeFills({...base,fills:[fill('e','entry','buy',5,2),fill('u','exit','sell',1,3),fill('x','exit','sell',5,4)]}).complete,false);});
++test('mixed bot five plus manual two never attributes seven-contract actual fees',()=>{const result=attributeTradeFills({source:'bot',side:'LONG',productId:1,ownedContracts:5,entryOrderId:'entry',fills:[fill('e','entry','buy',5,2),fill('m','manual','buy',2,3),fill('x','exit','sell',7,4)],orders:[botOrder,{id:'manual',product_id:1},{id:'exit',product_id:1,reduce_only:true}],windowStart:1000,windowEnd:5000,historyComplete:true,mixedPosition:true});assert.equal(result.complete,false);assert.deepEqual(result.exitFills,[]);});
++test('manual transition rejects additions and ambiguous lifecycle activity',()=>{const result=attributeTradeFills({source:'exchange_existing',side:'LONG',productId:1,ownedContracts:5,entryOrderId:null,fills:[fill('add','add','buy',1,3),fill('exit','exit','sell',6,4)],orders:[{id:'add',product_id:1},{id:'exit',product_id:1}],windowStart:2000,windowEnd:5000,historyComplete:true,mixedPosition:false});assert.equal(result.complete,false);});
++test('Delta reporting start_time conversion is milliseconds to microseconds',()=>{assert.equal(toDeltaMicroseconds(1234),1234000);});
++test('Delta reporting pagination is bounded and exposes incomplete coverage',async()=>{const complete=await boundedHistory(async(after)=>after?{result:[2],meta:{after:null}}:{result:[1],meta:{after:'next'}},10);assert.deepEqual(complete,{result:[1,2],complete:true});const limited=await boundedHistory(async()=>({result:[1],meta:{after:'next'}}),1);assert.deepEqual(limited,{result:[1],complete:false});});
++test('simulated restart finds a proven stale OPEN close boundary before later activity',()=>{const boundary=findBotCloseBoundary({productId:1,entryOrderId:'entry',fills:[fill('e','entry','buy',5,2),fill('x','exit','sell',5,3),fill('later','manual','buy',2,4)]});assert.equal(boundary,3000);});
++test('coverage requires every trade and remains additive across scopes',()=>{const bot=Array.from({length:10},(_,i)=>{const t=row('bot',i+1,i<8?1:null,null);if(i===0)t.netPnL=t.grossPnL!-1;return t;});const manual=Array.from({length:5},(_,i)=>row('exchange_existing',i+1,1,null));const botStats=calculateStats(bot),manualStats=calculateStats(manual),account=calculateStats([...bot,...manual]);assert.equal(botStats.brokerageReportedTrades,8);assert.equal(manualStats.brokerageReportedTrades,5);assert.equal(account.brokerageReportedTrades,13);assert.equal(botStats.gstReportedTrades,0);assert.equal(manualStats.gstReportedTrades,0);assert.equal(account.gstReportedTrades,0);assert.equal(botStats.fullyReconciledTrades,1);assert.equal(botStats.netPnLComplete,false);assert.equal(manualStats.netPnLComplete,false);assert.equal(account.netPnLComplete,false);assert.equal(account.totalTrades,15);assert.equal(account.brokerage,botStats.brokerage+manualStats.brokerage);});
++test('zero-trade coverage is explicit and not a failure',()=>{const stats=calculateStats([]);assert.equal(stats.totalTrades,0);assert.equal(stats.netPnLComplete,false);assert.equal(stats.winRate,0);});
++test('20 of 100 brokerage and 1 of 100 net records are explicitly incomplete',()=>{const rows=Array.from({length:100},(_,i)=>{const trade=row('bot',1,i<20?0.1:null,null);if(i===0)trade.netPnL=0.9;return trade;});const stats=calculateStats(rows);assert.equal(stats.brokerageReportedTrades,20);assert.equal(stats.brokerageComplete,false);assert.equal(stats.fullyReconciledTrades,1);assert.equal(stats.netPnLComplete,false);});
++test('real persistence logic keeps bot OPEN and CLOSED reconciliation in one idempotent record',async()=>{const records=new Map<string,any>();const fills=[fill('e','entry','buy',5,2),fill('x1','exit1','sell',2,3),fill('x2','exit2','sell',3,4)];const orders=[botOrder,{id:'exit1',product_id:1,reduce_only:true},{id:'exit2',product_id:1,stop_order_type:'take_profit_order'}];const dependencies:TradePersistenceDependencies={upsert:(async(doc:any)=>{records.set(doc.tradeId,{...records.get(doc.tradeId),...doc});return records.get(doc.tradeId);}) as any,fills:(async()=>({result:fills,complete:true})) as any,orders:(async()=>({result:orders,complete:true})) as any,now:()=>5000};const active={direction:'long',source:'bot' as const,attributionStatus:'BOT_CONFIRMED',entryPrice:100,trigger:100,sl:90,tp:110,contracts:5,ownedContracts:5,contractValue:1,orderId:'entry',clientOrderId:'ema-123',openedAt:1000,riskAmount:50,mixedPosition:false};await persistOpenBotTrade(active,1,'XAUTUSD',dependencies);assert.equal(records.size,1);assert.equal([...records.values()][0].status,'OPEN');const first=await persistClosedTrade(active,1,'XAUTUSD',110,dependencies);const second=await persistClosedTrade(active,1,'XAUTUSD',110,dependencies);assert.equal(records.size,1);assert.equal(first.tradeId,second.tradeId);assert.equal([...records.values()][0].status,'CLOSED');assert.deepEqual(first.exitFillIds,['x1','x2']);});
++
++const classifyExit=(side:'LONG'|'SHORT',exitOrder:any,exitPrice?:number)=>{const entrySide=side==='LONG'?'buy':'sell',exitSide=side==='LONG'?'sell':'buy';const entry={...fill('entry-fill','entry',entrySide,5,2),price:side==='LONG'?100:110};const exit={...fill('exit-fill','exit',exitSide,5,3),price:exitPrice??(side==='LONG'?110:100)};return classifyBotExitEvidence({side,productId:1,ownedContracts:5,entryOrderId:'entry',fills:[entry,exit],orders:[{...botOrder,side:entrySide},{id:'exit',product_id:1,...exitOrder}],windowStart:1000,windowEnd:4000,historyComplete:true,mixedPosition:false});};
++test('LONG TP fill remains a win when ticker later moves below TP',()=>{const tickerAfterClose=90;const result=classifyExit('LONG',{stop_order_type:'take_profit_order'});assert.ok(tickerAfterClose<110);assert.equal(result.outcome,'WIN');assert.equal(applyDailyLossOutcome(3,result.outcome),0);});
++test('SHORT TP fill remains a win when ticker later moves above TP',()=>{const tickerAfterClose=120;const result=classifyExit('SHORT',{stop_order_type:'take_profit_order'});assert.ok(tickerAfterClose>100);assert.equal(result.outcome,'WIN');assert.equal(applyDailyLossOutcome(2,result.outcome),0);});
++test('profitable bot manual close before TP resets rather than increments consecutive losses',()=>{const result=classifyExit('LONG',{reduce_only:true},105);assert.equal(result.exitReason,'MANUAL_CLOSE');assert.equal(result.outcome,'WIN');assert.equal(applyDailyLossOutcome(4,result.outcome),0);});
++test('losing bot manual close counts a realized loss without being labelled SL',()=>{const result=classifyExit('LONG',{reduce_only:true},95);assert.equal(result.exitReason,'MANUAL_CLOSE');assert.equal(result.outcome,'LOSS');assert.equal(applyDailyLossOutcome(4,result.outcome),5);});
++test('proven SL increments and proven TP resets exactly once at close transition',()=>{const sl=classifyExit('LONG',{stop_order_type:'stop_loss_order'},90),tp=classifyExit('LONG',{stop_order_type:'take_profit_order'},110);assert.equal(sl.exitReason,'SL');assert.equal(applyDailyLossOutcome(2,sl.outcome),3);assert.equal(tp.exitReason,'TP');assert.equal(applyDailyLossOutcome(2,tp.outcome),0);});
++test('unknown exit and MongoDB availability cannot fabricate a confirmed loss',()=>{const result=classifyBotExitEvidence({side:'LONG',productId:1,ownedContracts:5,entryOrderId:'entry',fills:[],orders:[],windowStart:1000,windowEnd:4000,historyComplete:false,mixedPosition:false});const mongoAvailable=false;assert.equal(mongoAvailable,false);assert.equal(result.outcome,'UNKNOWN');assert.equal(applyDailyLossOutcome(6,result.outcome),6);});
++
++const deltaEpochMs=1725865012000;
++const microFill=(fillId:string,orderId:string,side:'buy'|'sell',size:number,offsetMs:number)=>({id:fillId,order_id:orderId,product_id:1,side,size,price:side==='buy'?100:110,created_at:String((deltaEpochMs+offsetMs)*1000)});
++test('Delta timestamp normalization supports microsecond strings and numbers',()=>{assert.equal(deltaTimestampMilliseconds('1725865012000000'),1725865012000);assert.equal(deltaTimestampMilliseconds(1725865012000000),1725865012000);});
++test('Delta timestamp normalization supports milliseconds and ISO timestamps',()=>{assert.equal(deltaTimestampMilliseconds('1725865012000'),1725865012000);assert.equal(deltaTimestampMilliseconds(1725865012000),1725865012000);assert.equal(deltaTimestampMilliseconds('2026-08-30T12:00:00.000Z'),Date.parse('2026-08-30T12:00:00.000Z'));});
++test('Delta timestamp normalization safely rejects invalid values',()=>{for(const value of [null,undefined,'','not-a-timestamp','1234'])assert.equal(deltaTimestampMilliseconds(value),null);});
++test('bot TP and SL classification accepts Delta microsecond timestamps',()=>{const classify=(stop_order_type:string)=>classifyBotExitEvidence({side:'LONG',productId:1,ownedContracts:5,entryOrderId:'entry',fills:[microFill('entry-fill','entry','buy',5,0),microFill('exit-fill','exit','sell',5,1000)],orders:[{id:'entry',product_id:1,client_order_id:'ema-123'},{id:'exit',product_id:1,stop_order_type}],windowStart:deltaEpochMs-1000,windowEnd:deltaEpochMs+2000,historyComplete:true,mixedPosition:false});const tp=classify('take_profit_order'),sl=classify('stop_loss_order');assert.equal(tp.outcome,'WIN');assert.equal(tp.exitReason,'TP');assert.equal(sl.outcome,'LOSS');assert.equal(sl.exitReason,'SL');});
++test('bot ownership can be confirmed with Delta microsecond timestamps',()=>{const result=resolvePositionOwnership({lookupFailed:false,currentSize:5,productId:1,persisted:{entryOrderId:'entry',entryClientOrderId:'ema-123',entryTime:new Date(deltaEpochMs),side:'LONG',contracts:5},fills:[microFill('entry-fill','entry','buy',5,0)],orders:[{id:'entry',product_id:1,client_order_id:'ema-123'}],historyComplete:true});assert.equal(result.status,'BOT_CONFIRMED');});
++test('bot close boundary normalizes Delta microseconds to milliseconds',()=>{const boundary=findBotCloseBoundary({productId:1,entryOrderId:'entry',fills:[microFill('entry-fill','entry','buy',5,0),microFill('exit-fill','exit','sell',5,1000)]});assert.equal(boundary,deltaEpochMs+1000);});

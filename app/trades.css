@@ -1,0 +1,5 @@
+.performanceGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
+.performanceCard{margin-top:0}.netValue{display:block;color:#ffb000;font-size:17px;margin:14px 0}
+.statRows{display:grid;gap:8px}.statRows span{display:flex;justify-content:space-between;gap:12px;color:#a9987a}.statRows b{color:#e8dcc0}
+.tableScroll{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap}
+th,td{text-align:left;padding:9px;border-bottom:1px solid #33280e}th{color:#ffb000}.tradeHistoryPanel{max-width:100%}

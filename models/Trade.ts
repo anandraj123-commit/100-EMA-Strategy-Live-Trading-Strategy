@@ -1,0 +1,56 @@
+import type { ObjectId } from 'mongodb';
+
+export type TradeSource = 'bot' | 'exchange_existing';
+export type AttributionStatus = 'BOT_CONFIRMED' | 'MANUAL_CONFIRMED' | 'UNKNOWN' | 'LOOKUP_FAILED';
+export type TradeSide = 'LONG' | 'SHORT';
+export type TradeExitReason = 'SL' | 'TP' | 'MANUAL_CLOSE' | 'OTHER' | 'UNKNOWN';
+export type FinancialStatus = 'actual' | 'partial' | 'estimated' | 'unavailable';
+export type ReconciliationStatus = 'OPEN' | 'CLOSED' | 'RECONCILING' | 'FAILED';
+
+export interface TradeDocument {
+  _id?: ObjectId;
+  tradeId: string;
+  symbol: string;
+  productId: number;
+  side: TradeSide;
+  source: TradeSource;
+  attributionStatus: AttributionStatus;
+  status: ReconciliationStatus;
+  entryTime: Date | null;
+  intendedEntryPrice: number | null;
+  actualEntryPrice: number | null;
+  quantity: number | null;
+  contracts: number | null;
+  contractValue: number | null;
+  initialSL: number | null;
+  takeProfit: number | null;
+  exitTime: Date | null;
+  intendedExitPrice: number | null;
+  actualExitPrice: number | null;
+  exitReason: TradeExitReason;
+  grossPnL: number | null;
+  brokerage: number | null;
+  GST: number | null;
+  otherCharges: number | null;
+  totalCharges: number | null;
+  netPnL: number | null;
+  estimatedBrokerage: number | null;
+  estimatedGST: number | null;
+  estimatedTotalCharges: number | null;
+  estimatedNetPnL: number | null;
+  realizedR: number | null;
+  entryOrderId: string | null;
+  exitOrderId: string | null;
+  entryClientOrderId: string | null;
+  exitClientOrderId: string | null;
+  entryFillIds: string[];
+  exitFillIds: string[];
+  financialStatus: FinancialStatus;
+  feeDataSource: string | null;
+  priceDataSource: string | null;
+  attributionNote: string | null;
+  reconciliationError: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+  reconciledAt: Date | null;
+}

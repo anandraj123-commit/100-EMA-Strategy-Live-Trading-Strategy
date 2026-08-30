@@ -1,0 +1,940 @@
+diff --git a/README.md b/README.md
+index c30b068..11f7b69 100644
+--- a/README.md
++++ b/README.md
+@@ -129,6 +129,32 @@ Examples:
+ 
+ If XAUTUSD already has a non-zero Delta position before the worker starts, the worker adopts it as `activeTrade` with source `exchange_existing`. The dashboard shows `ACTIVE · EXISTING POSITION`, current size and entry price, and synchronizes the live exchange SL/TP every 5 seconds. While that position remains open, the normal one-position-at-a-time guard prevents any new algo entry. Closing the adopted position does not alter the bot's daily loss streak because the trade was not created by the bot.
+ 
++## Persistent trade history
++
++Completed XAUTUSD trades are stored server-side in MongoDB's `trades` collection and exposed only through authenticated `GET /api/trades` and `GET /api/trades/stats` routes. History supports `page`, `limit` (maximum 100), `source=bot|exchange_existing`, and a validated symbol filter. Statistics are aggregated in MongoDB as separate bot, manual, and account scopes.
++
++The collection creates these indexes: unique `tradeId`; compound `source + exitTime`; compound `symbol + exitTime`; `exitTime`; and `createdAt`. Bot identity uses the entry exchange order ID so its OPEN and CLOSED states update the same record. Exchange-existing identity requires attributable fill IDs. Writes use atomic upserts; timestamps are never used as the sole identity.
++
++Actual entry/exit prices use quantity-weighted Delta fills when attributable. For an adopted exchange-existing position, Delta's live position average is retained as the actual entry source and the exit still requires fills. `brokerage` is the sum of Delta fill `commission` values for attributed entry and exit fills. Delta's fill schema does not expose attributable GST, so actual `GST`, `totalCharges`, and actual `netPnL` remain null unless all actual charge components are known. The configured taker rate and `GST_PCT` populate only `estimatedBrokerage`, `estimatedGST`, `estimatedTotalCharges`, and `estimatedNetPnL`; the dashboard never labels them “paid.”
++
++MongoDB and reconciliation failures are recorded as worker trade-history events and do not reject signals, change sizing, or modify exchange execution. Ownership resolution has four reporting states: bot confirmed, manual confirmed, unknown, and lookup failed. A timeout/error is never evidence of manual ownership. An OPEN bot record is restored only when its `ema-` client order, entry fills, product, side, and uninterrupted Delta fill lifecycle connect it to the current position; direction or size alone is insufficient. Uncertain positions remain monitored and continue blocking a second XAUTUSD entry, but they enter neither bot nor manual performance and never affect the bot loss streak.
++
++On a zero-position startup/reconnect reporting pass, OPEN/RECONCILING bot records are checked against bounded, cursor-paginated Delta fills and order history (up to ten 50-record pages). A provable close updates the same trade record; otherwise it remains RECONCILING with a safe diagnostic. This closes the normal restart window after an asynchronous close write, without blocking order protection or changing trading behavior.
++
++Fill attribution is conservative. Bot exits require the exact owned quantity, confirmed entry fills, and exit-order evidence; a manual addition, oversized/cross-boundary fill, missing order, incomplete pagination, or mixed lifecycle makes actual financial attribution unavailable. Manual exits require an exact position-close transition within the last live observation window, without additions/reversals. Unknown values stay null. Reporting quantity is capped at the ownership snapshot, and a 7-contract fill is never charged as an actual 5-contract bot exit.
++
++Statistics return known sums together with coverage counts and completeness booleans for gross P/L, brokerage, GST, total charges, and net P/L. “Paid” and complete Net P/L labels require every trade in that scope to be reconciled; otherwise the dashboard shows known values and `reported / total` coverage. Win rate is consistently based on actual gross P/L, not a mixture of gross and net outcomes. Bot, manual, and account known sums remain additive; unknown ownership is excluded from those scopes.
++
++The worker does not import a manual trade that opened and closed entirely while it was offline. No claim of complete historical manual import is made. Actual and estimated brokerage/GST/charges/net P/L remain separate in storage and in the history table.
++
++`MAX_DAILY_CONSECUTIVE_LOSSES` counts only reliably established realized losses from confirmed bot-owned positions. Delta TP fills reset the streak and Delta SL fills increment it regardless of where the ticker moves afterward. An exactly attributable profitable manual close resets the consecutive-loss streak; an exactly attributable losing manual close increments it but remains labelled `MANUAL_CLOSE`, not SL. Breakeven or unprovable exits leave the streak unchanged. This control classification uses read-only Delta fills/orders and never depends on MongoDB trade-history persistence.
++
++MongoDB integration tests are opt-in and must use a disposable deployment; they create and drop a random database:
++
++```sh
++TRADE_TEST_MONGODB_URI='mongodb://dedicated-test-server' npm test
++```
++
+ 
+ ## Stop Robot behavior
+ 
+diff --git a/app/layout.tsx b/app/layout.tsx
+index 5029ee4..7b13e77 100644
+--- a/app/layout.tsx
++++ b/app/layout.tsx
+@@ -1,3 +1,4 @@
+ import './style.css';
++import './trades.css';
+ export const metadata={title:'XAUTUSD Delta Live Algo'};
+ export default function Layout({children}:{children:React.ReactNode}){return <html><body>{children}</body></html>}
+diff --git a/components/TradingDashboard.tsx b/components/TradingDashboard.tsx
+index e08089d..b522858 100644
+--- a/components/TradingDashboard.tsx
++++ b/components/TradingDashboard.tsx
+@@ -6,6 +6,8 @@ export default function TradingDashboard() {
+   const [s, setS] = useState<any>({});
+   const [controlBusy, setControlBusy] = useState(false);
+   const [csrfToken, setCsrfToken] = useState('');
++  const [tradeStats, setTradeStats] = useState<any>(null);
++  const [trades, setTrades] = useState<any[]>([]);
+ 
+   async function load() {
+     try {
+@@ -23,6 +25,15 @@ export default function TradingDashboard() {
+     }
+   }
+ 
++  async function loadHistory() {
++    try {
++      const [statsResponse,tradesResponse]=await Promise.all([fetch('/api/trades/stats',{cache:'no-store'}),fetch('/api/trades?limit=25',{cache:'no-store'})]);
++      if(statsResponse.status===401||tradesResponse.status===401){window.location.replace('/login');return;}
++      if(statsResponse.ok) setTradeStats(await statsResponse.json());
++      if(tradesResponse.ok) setTrades((await tradesResponse.json()).trades||[]);
++    } catch { /* retain the last history view during a temporary failure */ }
++  }
++
+   useEffect(() => {
+     fetch('/api/auth/session', { cache: 'no-store' })
+       .then(async (res) => {
+@@ -38,8 +49,10 @@ export default function TradingDashboard() {
+       })
+       .catch(() => setS((prev: any) => ({ ...prev, error: 'Unable to initialize secure session' })));
+     load();
++    loadHistory();
+     const timer = setInterval(load, 3000);
+-    return () => clearInterval(timer);
++    const historyTimer = setInterval(loadHistory, 15000);
++    return () => { clearInterval(timer); clearInterval(historyTimer); };
+   }, []);
+ 
+   async function control(running: boolean) {
+@@ -87,6 +100,9 @@ export default function TradingDashboard() {
+ 
+   const running = s.running === true;
+   const deltaOnline = s.connection?.state !== 'offline';
++  const money=(value:any)=>value==null?'—':Number(value).toFixed(4);
++  const coveredValue=(scope:any,valueField:string,completeField:string)=>scope?.totalTrades===0?'0.0000':scope?.[completeField]?money(scope[valueField]):'—';
++  const coverage=(scope:any,reportedField:string)=>`${scope?.[reportedField]??0} / ${scope?.totalTrades??0}`;
+ 
+   function displayStatus(action?: string, reason?: string) {
+     if (action === 'ENTRY' && reason === 'ALGO_POSITION_OPEN') return 'ENTRY · ALGO POSITION OPEN';
+@@ -134,7 +150,7 @@ export default function TradingDashboard() {
+     ['Available', s.available],
+     ['Position Size', s.position?.size],
+     ['Entry Price', s.position?.entryPrice],
+-    ['Position Source', s.activeTrade?.source === 'exchange_existing' ? 'EXISTING DELTA POSITION' : s.activeTrade?.source === 'bot' ? 'BOT' : '—'],
++    ['Position Source', s.activeTrade?.source === 'exchange_existing' ? 'EXISTING DELTA POSITION' : s.activeTrade?.source === 'bot' ? 'BOT' : s.activeTrade?.source === 'unattributed' ? 'UNKNOWN / UNATTRIBUTED' : '—'],
+     ['Synced Stop Loss', s.activeTrade?.sl ?? 'NOT SET'],
+     ['Synced Take Profit', s.activeTrade?.tp ?? 'NOT SET'],
+     ['Daily Loss Streak', s.lossStreak],
+@@ -190,6 +206,26 @@ export default function TradingDashboard() {
+         ))}
+       </section>
+ 
++      <div className="performanceGrid">
++        {([['ACCOUNT TOTAL',tradeStats?.account],['BOT PERFORMANCE',tradeStats?.bot],['MANUAL PERFORMANCE',tradeStats?.manual]] as const).map(([title,scope])=>(
++          <div className="panel performanceCard" key={title}>
++            <h2>{title}</h2>
++            <strong className="netValue">{title==='ACCOUNT TOTAL'?'ACCOUNT':title.split(' ')[0]} NET P/L: {coveredValue(scope,'netPnL','netPnLComplete')}</strong>
++            <div className="statRows">
++              <span>Trades <b>{scope?.totalTrades??0}</b></span>
++              <span>{scope?.grossPnLComplete||scope?.totalTrades===0?'Gross P/L':'Known Gross P/L'} <b>{scope?.grossPnLComplete||scope?.totalTrades===0?money(scope?.grossPnL):money(scope?.grossPnL)}</b></span><span>Gross P/L Coverage <b>{coverage(scope,'grossPnLReportedTrades')}</b></span>
++              <span>{scope?.brokerageComplete||scope?.totalTrades===0?'Brokerage Paid':'Known Brokerage'} <b>{scope?.brokerageComplete||scope?.totalTrades===0?money(scope?.brokerage):money(scope?.brokerage)}</b></span><span>Brokerage Coverage <b>{coverage(scope,'brokerageReportedTrades')}</b></span>
++              <span>{scope?.gstComplete||scope?.totalTrades===0?'GST Paid':'Known GST'} <b>{scope?.gstComplete||scope?.totalTrades===0?money(scope?.GST):money(scope?.GST)}</b></span><span>GST Coverage <b>{coverage(scope,'gstReportedTrades')}</b></span>
++              <span>Total Charges <b>{coveredValue(scope,'totalCharges','totalChargesComplete')}</b></span><span>Charges Coverage <b>{coverage(scope,'totalChargesReportedTrades')}</b></span>
++              <span>Net P/L Coverage <b>{coverage(scope,'fullyReconciledTrades')}</b></span>
++              {title!=='ACCOUNT TOTAL'&&<span>Gross Win Rate <b>{Number(scope?.winRate??0).toFixed(2)}%</b></span>}
++            </div>
++          </div>
++        ))}
++      </div>
++
++      <div className="panel tradeHistoryPanel"><h2>Persistent Trade History</h2><div className="tableScroll"><table><thead><tr><th>Symbol</th><th>Source</th><th>Side</th><th>Entry Time</th><th>Actual Entry</th><th>Exit Time</th><th>Actual Exit</th><th>Qty</th><th>SL</th><th>TP</th><th>Exit</th><th>Gross P/L</th><th>Actual Brokerage</th><th>Estimated Brokerage</th><th>Actual GST</th><th>Estimated GST</th><th>Actual Charges</th><th>Estimated Charges</th><th>Actual Net P/L</th><th>Estimated Net P/L</th><th>R (actual net)</th><th>Status</th></tr></thead><tbody>{trades.map(t=><tr key={t.tradeId}><td>{t.symbol}</td><td>{t.source==='bot'?'BOT':'MANUAL'}</td><td>{t.side}</td><td>{t.entryTime?new Date(t.entryTime).toLocaleString():'—'}</td><td>{money(t.actualEntryPrice)}</td><td>{t.exitTime?new Date(t.exitTime).toLocaleString():'—'}</td><td>{money(t.actualExitPrice)}</td><td>{money(t.quantity)}</td><td>{money(t.initialSL)}</td><td>{money(t.takeProfit)}</td><td>{t.exitReason}</td><td>{money(t.grossPnL)}</td><td>{money(t.brokerage)}</td><td>{money(t.estimatedBrokerage)}</td><td>{money(t.GST)}</td><td>{money(t.estimatedGST)}</td><td>{money(t.totalCharges)}</td><td>{money(t.estimatedTotalCharges)}</td><td>{money(t.netPnL)}</td><td>{money(t.estimatedNetPnL)}</td><td>{money(t.realizedR)}</td><td>{t.financialStatus}</td></tr>)}{!trades.length&&<tr><td colSpan={22}>No persisted completed trades yet.</td></tr>}</tbody></table></div></div>
++
+ 
+       <div className="panel">
+         <h2>{s.strategy?.resolution ? `${s.strategy.resolution} Decision Log` : 'Decision Log'}</h2>
+diff --git a/lib/delta.ts b/lib/delta.ts
+index 3b28731..e76d03f 100644
+--- a/lib/delta.ts
++++ b/lib/delta.ts
+@@ -89,6 +89,41 @@ export async function getOpenOrders(productId: number) {
+   return (await privateRequest('GET', '/v2/orders', { product_id: productId, state: 'open' })).result || [];
+ }
+ 
++// Read-only reporting endpoints. They are intentionally separate from order
++// execution and capped at Delta's documented maximum page size.
++export function toDeltaMicroseconds(epochMilliseconds:number) {
++  return Math.trunc(epochMilliseconds * 1_000);
++}
++
++export async function getOrderHistory(productId: number, startTime?: number, after?:string) {
++  return await privateRequest('GET', '/v2/orders/history', {
++    product_ids: String(productId), start_time: startTime, page_size: 50, after
++  });
++}
++
++export async function getFills(productId: number, startTime?: number, after?:string) {
++  return await privateRequest('GET', '/v2/fills', {
++    product_ids: String(productId), start_time: startTime, page_size: 50, after
++  });
++}
++
++export async function boundedHistory(fetchPage:(after?:string)=>Promise<any>, maxPages=10) {
++  const result:any[]=[]; let after:string|undefined; const seen=new Set<string>();
++  for(let page=0;page<maxPages;page++) {
++    const response=await fetchPage(after);
++    const next=typeof response?.meta?.after==='string'&&response.meta.after?response.meta.after:undefined;
++    if((after&&next===after)||(next&&seen.has(next))) return {result,complete:false};
++    if(Array.isArray(response?.result)) result.push(...response.result);
++    if(!next) return {result,complete:true};
++    seen.add(next);
++    after=next;
++  }
++  return {result,complete:false};
++}
++
++export async function getOrderHistoryBounded(productId:number,startTime?:number,maxPages=10){return boundedHistory(after=>getOrderHistory(productId,startTime,after),maxPages);}
++export async function getFillsBounded(productId:number,startTime?:number,maxPages=10){return boundedHistory(after=>getFills(productId,startTime,after),maxPages);}
++
+ export async function setLeverage(productId: number, leverage: number) {
+   return privateRequest('POST', `/v2/products/${productId}/orders/leverage`, undefined, { leverage: String(leverage) });
+ }
+diff --git a/lib/trades/reconciliation.ts b/lib/trades/reconciliation.ts
+new file mode 100644
+index 0000000..e2fc425
+--- /dev/null
++++ b/lib/trades/reconciliation.ts
+@@ -0,0 +1,160 @@
++import crypto from 'node:crypto';
++import type { AttributionStatus, FinancialStatus, TradeSide } from '../../models/Trade';
++
++export interface DeltaFill { id?: string|number; order_id?: string|number; client_order_id?: string; product_id?: number; product_symbol?: string; side?: string; price?: string|number; size?: string|number; commission?: string|number; created_at?: string|number; }
++export interface DeltaOrder { id?:string|number; client_order_id?:string; product_id?:number; side?:string; reduce_only?:boolean; stop_order_type?:string; created_at?:string|number; }
++
++const id=(value:unknown)=>value==null?null:String(value);
++export function deltaTimestampMilliseconds(value:unknown):number|null {
++  if(value==null||value==='') return null;
++  const text=String(value).trim();
++  if(!text) return null;
++  if(/^\d+$/.test(text)) {
++    const numeric=Number(text);
++    if(!Number.isSafeInteger(numeric)) return null;
++    if(numeric>=1_000_000_000_000_000) return Math.trunc(numeric/1_000);
++    if(numeric>=1_000_000_000_000) return numeric;
++    return null;
++  }
++  const parsed=Date.parse(text);
++  return Number.isFinite(parsed)?parsed:null;
++}
++const time=deltaTimestampMilliseconds;
++const signedSize=(fill:DeltaFill)=>Math.abs(Number(fill.size||0))*(String(fill.side).toLowerCase()==='buy'?1:-1);
++const nearly=(a:number,b:number)=>Math.abs(a-b)<1e-9;
++
++export type OwnershipResolution = {status:AttributionStatus;reason:string;botOwnedContracts:number;mixedPosition:boolean;staleBotClosed:boolean};
++export function resolvePositionOwnership(input:{lookupFailed:boolean;currentSize:number;productId:number;persisted?:{entryOrderId:string|null;entryClientOrderId:string|null;entryTime:Date|null;side:TradeSide;contracts:number|null}|null;fills:DeltaFill[];orders:DeltaOrder[];historyComplete:boolean}):OwnershipResolution {
++  const unknown=(status:AttributionStatus,reason:string,staleBotClosed=false):OwnershipResolution=>({status,reason,botOwnedContracts:0,mixedPosition:false,staleBotClosed});
++  if(input.lookupFailed) return unknown('LOOKUP_FAILED','MongoDB ownership lookup failed');
++  const fills=input.fills.filter(f=>Number(f.product_id)===input.productId&&time(f.created_at)!=null).sort((a,b)=>(time(a.created_at)??0)-(time(b.created_at)??0));
++  const orderById=new Map(input.orders.filter(o=>Number(o.product_id)===input.productId).map(o=>[id(o.id),o]));
++  if(input.persisted) {
++    const entryId=input.persisted.entryOrderId;
++    if(!entryId) return unknown('UNKNOWN','Persisted bot record has no entry order ID');
++    const order=orderById.get(entryId);
++    if(!order||id(order.client_order_id)!==input.persisted.entryClientOrderId||!String(order.client_order_id||'').startsWith('ema-')) return unknown('UNKNOWN','Persisted entry order is not confirmed by Delta');
++    const entryIndexes=fills.map((f,index)=>id(f.order_id)===entryId?index:-1).filter(index=>index>=0);
++    if(!entryIndexes.length) return unknown('UNKNOWN','Persisted entry fills are absent from bounded Delta history');
++    const start=entryIndexes[0]; let balance=0, closedBeforeEnd=false, mixed=false;
++    for(let index=start;index<fills.length;index++) {
++      const fill=fills[index]; balance+=signedSize(fill);
++      if(id(fill.order_id)!==entryId&&String(fill.side).toLowerCase()===(input.persisted.side==='LONG'?'buy':'sell')) mixed=true;
++      if(nearly(balance,0)&&index<fills.length-1) closedBeforeEnd=true;
++    }
++    if(closedBeforeEnd) return unknown('UNKNOWN','Persisted bot lifecycle reached zero before later same-symbol activity',true);
++    if(!input.historyComplete) return unknown('UNKNOWN','Delta history pagination was incomplete');
++    if(!nearly(balance,input.currentSize)) return unknown('UNKNOWN','Exchange fill lifecycle does not match current position');
++    const expectedSign=input.persisted.side==='LONG'?1:-1;
++    if(Math.sign(input.currentSize)!==expectedSign) return unknown('UNKNOWN','Current position side differs from persisted bot entry');
++    return {status:'BOT_CONFIRMED',reason:'Delta entry order and uninterrupted fill lifecycle confirmed',botOwnedContracts:Math.min(Math.abs(input.currentSize),Math.abs(input.persisted.contracts??0)),mixedPosition:mixed||Math.abs(input.currentSize)>Math.abs(input.persisted.contracts??0),staleBotClosed:false};
++  }
++  if(!input.historyComplete||!fills.length) return unknown('UNKNOWN','Complete current-position lifecycle is unavailable');
++  let balance=input.currentSize; let boundary=fills.length;
++  for(let index=fills.length-1;index>=0;index--){const previous=balance-signedSize(fills[index]);if(nearly(previous,0)){boundary=index;break;}balance=previous;}
++  if(boundary===fills.length) return unknown('UNKNOWN','No reliable zero-to-open lifecycle boundary found');
++  const lifecycle=fills.slice(boundary); const openingSide=input.currentSize>0?'buy':'sell';
++  const openingFills=lifecycle.filter(f=>String(f.side).toLowerCase()===openingSide);
++  const openingOrders=openingFills.map(f=>orderById.get(id(f.order_id)));
++  const mappedOpeningOrders=openingOrders.filter((order):order is DeltaOrder=>!!order);
++  if(!openingFills.length||mappedOpeningOrders.length<openingFills.length) return unknown('UNKNOWN','Every opening fill must map to a known order');
++  if(mappedOpeningOrders.some(o=>typeof o.client_order_id!=='string'||!o.client_order_id||o.client_order_id.startsWith('ema-'))) return unknown('UNKNOWN','Lifecycle contains bot-generated or unverified opening orders');
++  return {status:'MANUAL_CONFIRMED',reason:'Complete non-bot Delta lifecycle confirmed',botOwnedContracts:0,mixedPosition:false,staleBotClosed:false};
++}
++
++export type FillAttribution={entryFills:DeltaFill[];exitFills:DeltaFill[];complete:boolean;ambiguous:boolean;reason:string};
++export type BotExitOutcome='WIN'|'LOSS'|'BREAKEVEN'|'UNKNOWN';
++export type BotExitClassification={outcome:BotExitOutcome;exitReason:'SL'|'TP'|'MANUAL_CLOSE'|'UNKNOWN';actualEntryPrice:number|null;actualExitPrice:number|null;reason:string};
++
++export function classifyBotExitEvidence(input:{side:TradeSide;productId:number;ownedContracts:number;entryOrderId:string;fills:DeltaFill[];orders:DeltaOrder[];windowStart:number;windowEnd:number;historyComplete:boolean;mixedPosition:boolean}):BotExitClassification {
++  const unknown=(reason:string):BotExitClassification=>({outcome:'UNKNOWN',exitReason:'UNKNOWN',actualEntryPrice:null,actualExitPrice:null,reason});
++  if(!input.historyComplete) return unknown('Delta exit history is incomplete');
++  if(input.mixedPosition) return unknown('Same-symbol bot/manual quantity was mixed');
++  const fills=input.fills.filter(f=>Number(f.product_id)===input.productId&&time(f.created_at)!=null&&(time(f.created_at) as number)>=input.windowStart&&(time(f.created_at) as number)<=input.windowEnd).sort((a,b)=>(time(a.created_at)??0)-(time(b.created_at)??0));
++  const entryFills=fills.filter(f=>id(f.order_id)===input.entryOrderId);
++  const entrySize=entryFills.reduce((total,fill)=>total+Math.abs(Number(fill.size||0)),0);
++  if(!entryFills.length||!nearly(entrySize,input.ownedContracts)) return unknown('Exact bot entry fills are unavailable');
++  const entryBoundary=Math.max(...entryFills.map(f=>time(f.created_at)??0));
++  const exitSide=input.side==='LONG'?'sell':'buy';
++  const lifecycle=fills.filter(f=>(time(f.created_at)??0)>=entryBoundary);
++  if(lifecycle.some(f=>id(f.order_id)!==input.entryOrderId&&String(f.side).toLowerCase()!==exitSide)) return unknown('Bot lifecycle contains an unattributed same-side addition');
++  const exitFills=lifecycle.filter(f=>id(f.order_id)!==input.entryOrderId&&String(f.side).toLowerCase()===exitSide);
++  let exitSize=0;
++  for(const fill of exitFills){const size=Math.abs(Number(fill.size||0));if(size<=0||exitSize+size>input.ownedContracts)return unknown('Exit fill crosses bot-owned quantity');exitSize+=size;}
++  if(!exitFills.length||!nearly(exitSize,input.ownedContracts)) return unknown('Exact bot exit quantity is unavailable');
++  const orderById=new Map(input.orders.filter(o=>Number(o.product_id)===input.productId).map(o=>[id(o.id),o]));
++  const exitOrders=exitFills.map(fill=>orderById.get(id(fill.order_id)));
++  if(exitOrders.some(order=>!order)) return unknown('Exit order evidence is unavailable');
++  const reasons=new Set(exitOrders.map(order=>order?.stop_order_type==='take_profit_order'?'TP':order?.stop_order_type==='stop_loss_order'?'SL':'MANUAL_CLOSE'));
++  if(reasons.size!==1) return unknown('Exit fills have mixed exit reasons');
++  const actualEntryPrice=weightedAverage(entryFills), actualExitPrice=weightedAverage(exitFills);
++  const exitReason=[...reasons][0] as 'SL'|'TP'|'MANUAL_CLOSE';
++  if(exitReason==='TP') return {outcome:'WIN',exitReason,actualEntryPrice,actualExitPrice,reason:'Delta take-profit order and fills confirmed'};
++  if(exitReason==='SL') return {outcome:'LOSS',exitReason,actualEntryPrice,actualExitPrice,reason:'Delta stop-loss order and fills confirmed'};
++  if(actualEntryPrice==null||actualExitPrice==null) return unknown('Manual close prices are unavailable');
++  const gross=grossPnL(input.side,actualEntryPrice,actualExitPrice,1);
++  return {outcome:gross!>0?'WIN':gross!<0?'LOSS':'BREAKEVEN',exitReason:'MANUAL_CLOSE',actualEntryPrice,actualExitPrice,reason:'Exact manual-close fills determine realized gross outcome'};
++}
++
++export function applyDailyLossOutcome(currentStreak:number,outcome:BotExitOutcome){return outcome==='WIN'?0:outcome==='LOSS'?currentStreak+1:currentStreak;}
++
++export function findBotCloseBoundary(input:{productId:number;entryOrderId:string;fills:DeltaFill[]}) {
++  const fills=input.fills.filter(f=>Number(f.product_id)===input.productId&&time(f.created_at)!=null).sort((a,b)=>(time(a.created_at)??0)-(time(b.created_at)??0));
++  const start=fills.findIndex(f=>id(f.order_id)===input.entryOrderId); if(start<0) return null;
++  let balance=0;
++  for(let index=start;index<fills.length;index++){balance+=signedSize(fills[index]);if(index>start&&nearly(balance,0))return time(fills[index].created_at);}
++  return null;
++}
++
++export function attributeTradeFills(input:{source:'bot'|'exchange_existing';side:TradeSide;productId:number;ownedContracts:number;entryOrderId:string|null;fills:DeltaFill[];orders:DeltaOrder[];windowStart:number;windowEnd:number;historyComplete:boolean;mixedPosition:boolean}):FillAttribution {
++  const relevant=input.fills.filter(f=>Number(f.product_id)===input.productId&&time(f.created_at)!=null&&(time(f.created_at) as number)>=input.windowStart&&(time(f.created_at) as number)<=input.windowEnd).sort((a,b)=>(time(a.created_at)??0)-(time(b.created_at)??0));
++  const orderById=new Map(input.orders.filter(o=>Number(o.product_id)===input.productId).map(o=>[id(o.id),o]));
++  const entryFills=input.source==='bot'&&input.entryOrderId?relevant.filter(f=>id(f.order_id)===input.entryOrderId):[];
++  const exitSide=input.side==='LONG'?'sell':'buy';
++  const entryBoundary=input.source==='bot'&&entryFills.length?Math.max(...entryFills.map(f=>time(f.created_at)??0)):input.windowStart;
++  const lifecycleFills=relevant.filter(f=>(time(f.created_at)??0)>=(input.source==='bot'?entryBoundary:input.windowStart));
++  const candidates=lifecycleFills.filter(f=>String(f.side).toLowerCase()===exitSide&&id(f.order_id)!==input.entryOrderId);
++  if(!input.historyComplete) return {entryFills,exitFills:[],complete:false,ambiguous:true,reason:'Delta history pagination incomplete'};
++  if(input.mixedPosition) return {entryFills,exitFills:[],complete:false,ambiguous:true,reason:'Same-symbol manual/bot quantity was mixed'};
++  if(input.source==='bot'&&(!entryFills.length||!nearly(entryFills.reduce((n,f)=>n+Math.abs(Number(f.size||0)),0),input.ownedContracts))) return {entryFills,exitFills:[],complete:false,ambiguous:true,reason:'Bot entry fill coverage is incomplete'};
++  if(input.source==='bot'&&lifecycleFills.some(f=>id(f.order_id)!==input.entryOrderId&&String(f.side).toLowerCase()!==(input.side==='LONG'?'sell':'buy'))) return {entryFills,exitFills:[],complete:false,ambiguous:true,reason:'Bot lifecycle contains an unattributed same-side addition'};
++  if(input.source==='exchange_existing'&&relevant.some(f=>String(f.side).toLowerCase()!==exitSide)) return {entryFills:[],exitFills:[],complete:false,ambiguous:true,reason:'Manual close window contains additions or reversal activity'};
++  let total=0; const exitFills:DeltaFill[]=[];
++  for(const fill of candidates){const size=Math.abs(Number(fill.size||0));if(size<=0||total+size>input.ownedContracts) return {entryFills,exitFills:[],complete:false,ambiguous:true,reason:'Exit fill crosses the reliably owned quantity boundary'};const order=orderById.get(id(fill.order_id));if(!order) return {entryFills,exitFills:[],complete:false,ambiguous:true,reason:'Exit order evidence is unavailable'};if(input.source==='bot'&&order.reduce_only!==true&&!order.stop_order_type) return {entryFills,exitFills:[],complete:false,ambiguous:true,reason:'Bot exit order is not proven reduce-only or protective'};exitFills.push(fill);total+=size;}
++  if(!exitFills.length||!nearly(total,input.ownedContracts)) return {entryFills,exitFills:[],complete:false,ambiguous:true,reason:'Exact exit quantity is not attributable'};
++  return {entryFills,exitFills,complete:true,ambiguous:false,reason:'Exact lifecycle quantity and order evidence confirmed'};
++}
++
++const finite = (value: unknown): number|null => { const n = Number(value); return value !== null && value !== '' && Number.isFinite(n) ? n : null; };
++export function weightedAverage(fills: DeltaFill[]): number|null {
++  let value = 0, size = 0;
++  for (const fill of fills) { const p=finite(fill.price), q=finite(fill.size); if (p == null || q == null || q <= 0) continue; value += p*q; size += q; }
++  return size ? value/size : null;
++}
++export function aggregateCommission(fills: DeltaFill[]): number|null {
++  if (!fills.length) return null;
++  let total=0;
++  for (const fill of fills) { const fee=finite(fill.commission); if (fee == null) return null; total += fee; }
++  return total;
++}
++export function grossPnL(side: TradeSide, entry:number|null, exit:number|null, quantity:number|null): number|null {
++  if (entry == null || exit == null || quantity == null) return null;
++  return (side === 'LONG' ? exit-entry : entry-exit) * quantity;
++}
++export function stableTradeId(source:string, productId:number, entryOrderId:string|null, entryFillIds:string[], exitFillIds:string[]): string|null {
++  const identity = source==='bot'&&entryOrderId ? `entry-order:${entryOrderId}` : exitFillIds.length ? `exit:${[...exitFillIds].sort().join(',')}` : entryOrderId ? `entry-order:${entryOrderId}` : entryFillIds.length ? `entry:${[...entryFillIds].sort().join(',')}` : null;
++  if (!identity) return null;
++  return `${source}:${productId}:${crypto.createHash('sha256').update(identity).digest('hex').slice(0,32)}`;
++}
++export function financials(input:{side:TradeSide; entry:number|null; exit:number|null; quantity:number|null; entryFills:DeltaFill[]; exitFills:DeltaFill[]; estimatedBrokerage?:number|null; estimatedGST?:number|null}) {
++  const gross = grossPnL(input.side,input.entry,input.exit,input.quantity);
++  const brokerage = input.entryFills.length && input.exitFills.length ? aggregateCommission([...input.entryFills,...input.exitFills]) : null;
++  const GST = null; // Delta fills document commission, but no attributable GST field.
++  const otherCharges = null;
++  const totalCharges = brokerage != null && GST != null && otherCharges != null ? brokerage+GST+otherCharges : null;
++  const netPnL = gross != null && totalCharges != null ? gross-totalCharges : null;
++  const hasPrices = input.entry != null && input.exit != null && input.quantity != null;
++  const financialStatus:FinancialStatus = hasPrices && totalCharges != null ? 'actual' : hasPrices ? 'partial' : (input.estimatedBrokerage != null || input.estimatedGST != null) ? 'estimated' : 'unavailable';
++  const estimatedTotalCharges = input.estimatedBrokerage != null && input.estimatedGST != null ? input.estimatedBrokerage+input.estimatedGST : null;
++  return {grossPnL:gross,brokerage,GST,otherCharges,totalCharges,netPnL,estimatedBrokerage:input.estimatedBrokerage??null,estimatedGST:input.estimatedGST??null,estimatedTotalCharges,estimatedNetPnL:gross != null && estimatedTotalCharges != null ? gross-estimatedTotalCharges:null,financialStatus};
++}
+diff --git a/tests/trades.test.ts b/tests/trades.test.ts
+new file mode 100644
+index 0000000..cbba2c2
+--- /dev/null
++++ b/tests/trades.test.ts
+@@ -0,0 +1,69 @@
++import assert from 'node:assert/strict';
++import test from 'node:test';
++import { NextRequest } from 'next/server';
++import { aggregateCommission, applyDailyLossOutcome, attributeTradeFills, classifyBotExitEvidence, deltaTimestampMilliseconds, financials, findBotCloseBoundary, grossPnL, resolvePositionOwnership, stableTradeId, weightedAverage } from '../lib/trades/reconciliation';
++import { boundedHistory, toDeltaMicroseconds } from '../lib/delta';
++import { persistClosedTrade, persistOpenBotTrade, type TradePersistenceDependencies } from '../lib/trades/persistence';
++import { calculateStats } from '../lib/trades/statistics';
++import type { TradeDocument } from '../models/Trade';
++
++const row=(source:'bot'|'exchange_existing',gross:number,brokerage:number|null,GST:number|null):TradeDocument=>({tradeId:`${source}-${gross}`,symbol:'XAUTUSD',productId:1,side:'LONG',source,attributionStatus:source==='bot'?'BOT_CONFIRMED':'MANUAL_CONFIRMED',status:'CLOSED',entryTime:new Date(),intendedEntryPrice:100,actualEntryPrice:100,quantity:1,contracts:1,contractValue:1,initialSL:90,takeProfit:120,exitTime:new Date(),intendedExitPrice:100+gross,actualExitPrice:100+gross,exitReason:'UNKNOWN',grossPnL:gross,brokerage,GST,otherCharges:GST==null?null:0,totalCharges:brokerage!=null&&GST!=null?brokerage+GST:null,netPnL:brokerage!=null&&GST!=null?gross-brokerage-GST:null,estimatedBrokerage:null,estimatedGST:null,estimatedTotalCharges:null,estimatedNetPnL:null,realizedR:brokerage!=null&&GST!=null?gross/10:null,entryOrderId:'1',exitOrderId:'2',entryClientOrderId:null,exitClientOrderId:null,entryFillIds:['1'],exitFillIds:['2'],financialStatus:brokerage!=null&&GST!=null?'actual':'partial',feeDataSource:'delta_fills_commission',priceDataSource:'delta_weighted_fills',attributionNote:null,reconciliationError:null,createdAt:new Date(),updatedAt:new Date(),reconciledAt:new Date()});
++
++test('LONG and SHORT gross P/L signs are correct',()=>{assert.equal(grossPnL('LONG',100,110,2),20);assert.equal(grossPnL('LONG',100,90,2),-20);assert.equal(grossPnL('SHORT',100,90,2),20);assert.equal(grossPnL('SHORT',100,110,2),-20);});
++test('weighted fills and actual commission aggregate once',()=>{const fills=[{price:'100',size:1,commission:'0.1'},{price:'110',size:3,commission:'0.2'}];assert.equal(weightedAverage(fills),107.5);assert.ok(Math.abs((aggregateCommission(fills)??0)-0.3)<1e-12);});
++test('actual and estimated charges are never silently mixed',()=>{const value=financials({side:'LONG',entry:100,exit:110,quantity:2,entryFills:[{commission:'0.1'}],exitFills:[{commission:'0.2'}],estimatedBrokerage:0.5,estimatedGST:0.09});assert.equal(value.brokerage,0.30000000000000004);assert.equal(value.GST,null);assert.equal(value.totalCharges,null);assert.equal(value.netPnL,null);assert.equal(value.estimatedTotalCharges,0.59);assert.equal(value.financialStatus,'partial');});
++test('missing financial data does not create fake actual values',()=>{const value=financials({side:'LONG',entry:100,exit:110,quantity:1,entryFills:[],exitFills:[]});assert.equal(value.brokerage,null);assert.equal(value.GST,null);assert.equal(value.netPnL,null);});
++test('unknown commission stays unknown and estimates remain separate',()=>{const value=financials({side:'LONG',entry:100,exit:110,quantity:1,entryFills:[{commission:'0.1'}],exitFills:[{}],estimatedBrokerage:0.25,estimatedGST:0.045});assert.equal(value.brokerage,null);assert.equal(value.estimatedBrokerage,0.25);assert.equal(value.GST,null);assert.equal(value.estimatedGST,0.045);assert.equal(value.financialStatus,'partial');});
++test('stable exchange identity is deterministic and never timestamp-only',()=>{assert.equal(stableTradeId('bot',1,null,[],[]),null);assert.equal(stableTradeId('bot',1,'99',[],[]),stableTradeId('bot',1,'99',[],[]));assert.notEqual(stableTradeId('bot',1,'99',[],[]),stableTradeId('exchange_existing',1,'99',[],[]));});
++test('bot/manual/account statistics remain separate and additive',()=>{const rows=[row('bot',10,1,0.18),row('bot',-5,0.5,0.09),row('exchange_existing',8,0.8,0.144)];const bot=calculateStats(rows,'bot'),manual=calculateStats(rows,'exchange_existing'),account=calculateStats(rows);assert.equal(bot.totalTrades,2);assert.equal(manual.totalTrades,1);assert.equal(account.totalTrades,bot.totalTrades+manual.totalTrades);assert.equal(account.winningTrades,bot.winningTrades+manual.winningTrades);assert.equal(account.losingTrades,bot.losingTrades+manual.losingTrades);for(const key of ['grossPnL','brokerage','GST','totalCharges','netPnL'] as const)assert.ok(Math.abs(account[key]-bot[key]-manual[key])<1e-12, key);});
++test('trade APIs reject unauthenticated requests before database access',async()=>{const history=await import('../app/api/trades/route');const stats=await import('../app/api/trades/stats/route');assert.equal((await history.GET(new NextRequest('http://localhost/api/trades'))).status,401);assert.equal((await stats.GET(new NextRequest('http://localhost/api/trades/stats'))).status,401);});
++
++const botOrder={id:'entry',client_order_id:'ema-123',product_id:1,side:'buy'};
++const fill=(id:string,order_id:string,side:'buy'|'sell',size:number,second:number,commission='0.1')=>({id,order_id,product_id:1,side,size,price:side==='buy'?100:110,commission,created_at:new Date(second*1000).toISOString()});
++test('ownership lookup failure is never classified manual',()=>{assert.equal(resolvePositionOwnership({lookupFailed:true,currentSize:5,productId:1,persisted:null,fills:[],orders:[],historyComplete:false}).status,'LOOKUP_FAILED');});
++test('valid persisted bot ownership requires order and uninterrupted fills',()=>{const result=resolvePositionOwnership({lookupFailed:false,currentSize:5,productId:1,persisted:{entryOrderId:'entry',entryClientOrderId:'ema-123',entryTime:new Date(1000),side:'LONG',contracts:5},fills:[fill('e','entry','buy',5,2)],orders:[botOrder],historyComplete:true});assert.equal(result.status,'BOT_CONFIRMED');assert.equal(result.botOwnedContracts,5);});
++test('direction match alone cannot restore bot and stale lifecycle cannot claim manual position',()=>{const persisted={entryOrderId:'entry',entryClientOrderId:'ema-123',entryTime:new Date(1000),side:'LONG' as const,contracts:5};assert.equal(resolvePositionOwnership({lookupFailed:false,currentSize:5,productId:1,persisted,fills:[],orders:[botOrder],historyComplete:true}).status,'UNKNOWN');const stale=resolvePositionOwnership({lookupFailed:false,currentSize:5,productId:1,persisted,fills:[fill('e','entry','buy',5,2),fill('x','close','sell',5,3),fill('m','manual','buy',5,4)],orders:[botOrder,{id:'close',product_id:1},{id:'manual',product_id:1,client_order_id:'manual'}],historyComplete:true});assert.equal(stale.status,'UNKNOWN');assert.equal(stale.staleBotClosed,true);});
++test('complete non-bot lifecycle can be classified manual',()=>{const result=resolvePositionOwnership({lookupFailed:false,currentSize:2,productId:1,persisted:null,fills:[fill('m','manual','buy',2,4)],orders:[{id:'manual',product_id:1,client_order_id:'user-order'}],historyComplete:true});assert.equal(result.status,'MANUAL_CONFIRMED');});
++test('multiple fully mapped non-bot opening fills can be classified manual',()=>{const result=resolvePositionOwnership({lookupFailed:false,currentSize:4,productId:1,persisted:null,fills:[fill('m1','manual-1','buy',2,3),fill('m2','manual-2','buy',2,4)],orders:[{id:'manual-1',product_id:1,client_order_id:'user-order-1'},{id:'manual-2',product_id:1,client_order_id:'user-order-2'}],historyComplete:true});assert.equal(result.status,'MANUAL_CONFIRMED');});
++test('partially mapped opening lifecycle remains unknown',()=>{const result=resolvePositionOwnership({lookupFailed:false,currentSize:4,productId:1,persisted:null,fills:[fill('m1','manual-1','buy',2,3),fill('unresolved','missing-order','buy',2,4)],orders:[{id:'manual-1',product_id:1,client_order_id:'user-order-1'}],historyComplete:true});assert.equal(result.status,'UNKNOWN');assert.equal(result.botOwnedContracts,0);});
++test('mapped opening order without a client identity remains unknown',()=>{const result=resolvePositionOwnership({lookupFailed:false,currentSize:2,productId:1,persisted:null,fills:[fill('m','manual','buy',2,4)],orders:[{id:'manual',product_id:1}],historyComplete:true});assert.equal(result.status,'UNKNOWN');});
++test('mixed bot and manual opening orders remain unknown',()=>{const result=resolvePositionOwnership({lookupFailed:false,currentSize:4,productId:1,persisted:null,fills:[fill('b','bot-entry','buy',2,3),fill('m','manual-entry','buy',2,4)],orders:[{id:'bot-entry',product_id:1,client_order_id:'ema-123'},{id:'manual-entry',product_id:1,client_order_id:'user-order'}],historyComplete:true});assert.equal(result.status,'UNKNOWN');assert.equal(result.botOwnedContracts,0);});
++test('opening-order lookup failure remains lookup failed despite otherwise complete evidence',()=>{const result=resolvePositionOwnership({lookupFailed:true,currentSize:2,productId:1,persisted:null,fills:[fill('m','manual','buy',2,4)],orders:[{id:'manual',product_id:1,client_order_id:'user-order'}],historyComplete:true});assert.equal(result.status,'LOOKUP_FAILED');});
++test('unresolved opening ownership cannot persist fabricated financial attribution',async()=>{const ownership=resolvePositionOwnership({lookupFailed:false,currentSize:4,productId:1,persisted:null,fills:[fill('m','manual-1','buy',2,3),fill('u','missing-order','buy',2,4)],orders:[{id:'manual-1',product_id:1,client_order_id:'user-order'}],historyComplete:true});let upserts=0;const dependencies:TradePersistenceDependencies={upsert:(async()=>{upserts++;}) as any,fills:(async()=>({result:[],complete:true})) as any,orders:(async()=>({result:[],complete:true})) as any,now:()=>5000};await assert.rejects(()=>persistClosedTrade({direction:'long',source:'unattributed' as any,attributionStatus:ownership.status,contracts:4,ownedContracts:0,contractValue:1},1,'XAUTUSD',null,dependencies),/RECONCILIATION_UNRESOLVED/);assert.equal(upserts,0);});
++test('strict fill attribution accepts exact multiple bot exits',()=>{const result=attributeTradeFills({source:'bot',side:'LONG',productId:1,ownedContracts:5,entryOrderId:'entry',fills:[fill('e','entry','buy',5,2),fill('x1','exit1','sell',2,3),fill('x2','exit2','sell',3,4)],orders:[botOrder,{id:'exit1',product_id:1,reduce_only:true},{id:'exit2',product_id:1,stop_order_type:'take_profit_order'}],windowStart:1000,windowEnd:5000,historyComplete:true,mixedPosition:false});assert.equal(result.complete,true);assert.equal(weightedAverage(result.exitFills),110);assert.ok(Math.abs((aggregateCommission([...result.entryFills,...result.exitFills])??0)-0.3)<1e-12);});
++test('unrelated, outside-window, wrong-order and oversized exit fills are rejected',()=>{const base={source:'bot' as const,side:'LONG' as const,productId:1,ownedContracts:5,entryOrderId:'entry',orders:[botOrder,{id:'exit',product_id:1,reduce_only:true}],windowStart:1000,windowEnd:5000,historyComplete:true,mixedPosition:false};assert.equal(attributeTradeFills({...base,fills:[fill('e','entry','buy',5,2),fill('outside','exit','sell',5,9)]}).complete,false);assert.equal(attributeTradeFills({...base,fills:[fill('e','entry','buy',5,2),fill('wrong','missing','sell',5,3)]}).complete,false);assert.equal(attributeTradeFills({...base,fills:[fill('e','entry','buy',5,2),fill('large','exit','sell',7,3)]}).ambiguous,true);assert.equal(attributeTradeFills({...base,fills:[fill('e','entry','buy',5,2),fill('u','exit','sell',1,3),fill('x','exit','sell',5,4)]}).complete,false);});
++test('mixed bot five plus manual two never attributes seven-contract actual fees',()=>{const result=attributeTradeFills({source:'bot',side:'LONG',productId:1,ownedContracts:5,entryOrderId:'entry',fills:[fill('e','entry','buy',5,2),fill('m','manual','buy',2,3),fill('x','exit','sell',7,4)],orders:[botOrder,{id:'manual',product_id:1},{id:'exit',product_id:1,reduce_only:true}],windowStart:1000,windowEnd:5000,historyComplete:true,mixedPosition:true});assert.equal(result.complete,false);assert.deepEqual(result.exitFills,[]);});
++test('manual transition rejects additions and ambiguous lifecycle activity',()=>{const result=attributeTradeFills({source:'exchange_existing',side:'LONG',productId:1,ownedContracts:5,entryOrderId:null,fills:[fill('add','add','buy',1,3),fill('exit','exit','sell',6,4)],orders:[{id:'add',product_id:1},{id:'exit',product_id:1}],windowStart:2000,windowEnd:5000,historyComplete:true,mixedPosition:false});assert.equal(result.complete,false);});
++test('Delta reporting start_time conversion is milliseconds to microseconds',()=>{assert.equal(toDeltaMicroseconds(1234),1234000);});
++test('Delta reporting pagination is bounded and exposes incomplete coverage',async()=>{const complete=await boundedHistory(async(after)=>after?{result:[2],meta:{after:null}}:{result:[1],meta:{after:'next'}},10);assert.deepEqual(complete,{result:[1,2],complete:true});const limited=await boundedHistory(async()=>({result:[1],meta:{after:'next'}}),1);assert.deepEqual(limited,{result:[1],complete:false});});
++test('simulated restart finds a proven stale OPEN close boundary before later activity',()=>{const boundary=findBotCloseBoundary({productId:1,entryOrderId:'entry',fills:[fill('e','entry','buy',5,2),fill('x','exit','sell',5,3),fill('later','manual','buy',2,4)]});assert.equal(boundary,3000);});
++test('coverage requires every trade and remains additive across scopes',()=>{const bot=Array.from({length:10},(_,i)=>{const t=row('bot',i+1,i<8?1:null,null);if(i===0)t.netPnL=t.grossPnL!-1;return t;});const manual=Array.from({length:5},(_,i)=>row('exchange_existing',i+1,1,null));const botStats=calculateStats(bot),manualStats=calculateStats(manual),account=calculateStats([...bot,...manual]);assert.equal(botStats.brokerageReportedTrades,8);assert.equal(manualStats.brokerageReportedTrades,5);assert.equal(account.brokerageReportedTrades,13);assert.equal(botStats.gstReportedTrades,0);assert.equal(manualStats.gstReportedTrades,0);assert.equal(account.gstReportedTrades,0);assert.equal(botStats.fullyReconciledTrades,1);assert.equal(botStats.netPnLComplete,false);assert.equal(manualStats.netPnLComplete,false);assert.equal(account.netPnLComplete,false);assert.equal(account.totalTrades,15);assert.equal(account.brokerage,botStats.brokerage+manualStats.brokerage);});
++test('zero-trade coverage is explicit and not a failure',()=>{const stats=calculateStats([]);assert.equal(stats.totalTrades,0);assert.equal(stats.netPnLComplete,false);assert.equal(stats.winRate,0);});
++test('20 of 100 brokerage and 1 of 100 net records are explicitly incomplete',()=>{const rows=Array.from({length:100},(_,i)=>{const trade=row('bot',1,i<20?0.1:null,null);if(i===0)trade.netPnL=0.9;return trade;});const stats=calculateStats(rows);assert.equal(stats.brokerageReportedTrades,20);assert.equal(stats.brokerageComplete,false);assert.equal(stats.fullyReconciledTrades,1);assert.equal(stats.netPnLComplete,false);});
++test('real persistence logic keeps bot OPEN and CLOSED reconciliation in one idempotent record',async()=>{const records=new Map<string,any>();const fills=[fill('e','entry','buy',5,2),fill('x1','exit1','sell',2,3),fill('x2','exit2','sell',3,4)];const orders=[botOrder,{id:'exit1',product_id:1,reduce_only:true},{id:'exit2',product_id:1,stop_order_type:'take_profit_order'}];const dependencies:TradePersistenceDependencies={upsert:(async(doc:any)=>{records.set(doc.tradeId,{...records.get(doc.tradeId),...doc});return records.get(doc.tradeId);}) as any,fills:(async()=>({result:fills,complete:true})) as any,orders:(async()=>({result:orders,complete:true})) as any,now:()=>5000};const active={direction:'long',source:'bot' as const,attributionStatus:'BOT_CONFIRMED',entryPrice:100,trigger:100,sl:90,tp:110,contracts:5,ownedContracts:5,contractValue:1,orderId:'entry',clientOrderId:'ema-123',openedAt:1000,riskAmount:50,mixedPosition:false};await persistOpenBotTrade(active,1,'XAUTUSD',dependencies);assert.equal(records.size,1);assert.equal([...records.values()][0].status,'OPEN');const first=await persistClosedTrade(active,1,'XAUTUSD',110,dependencies);const second=await persistClosedTrade(active,1,'XAUTUSD',110,dependencies);assert.equal(records.size,1);assert.equal(first.tradeId,second.tradeId);assert.equal([...records.values()][0].status,'CLOSED');assert.deepEqual(first.exitFillIds,['x1','x2']);});
++
++const staleTrade={direction:'long',source:'bot' as const,attributionStatus:'BOT_CONFIRMED',entryPrice:100,trigger:100,sl:90,tp:110,contracts:5,ownedContracts:5,contractValue:1,orderId:'entry',clientOrderId:'ema-123',openedAt:1000,riskAmount:50,mixedPosition:false,closedAtBoundary:5000};
++function stalePersistenceHarness(fills:any[],orders:any[],complete=true){let record:any={status:'RECONCILING',reconciliationError:'pending'};const dependencies:TradePersistenceDependencies={upsert:(async(doc:any)=>{record={...record,...doc};return record;}) as any,fills:(async()=>({result:fills,complete})) as any,orders:(async()=>({result:orders,complete})) as any,now:()=>5000};return {persist:()=>persistClosedTrade(staleTrade,1,'XAUTUSD',null,dependencies),record:()=>record};}
++test('exact single bot exit allows stale reconciliation to close',async()=>{const fills=[fill('e','entry','buy',5,2),fill('x','exit','sell',5,3)];assert.equal(findBotCloseBoundary({productId:1,entryOrderId:'entry',fills}),3000);const harness=stalePersistenceHarness(fills,[botOrder,{id:'exit',product_id:1,reduce_only:true}]);await harness.persist();assert.equal(harness.record().status,'CLOSED');});
++test('mixed bot and manual stale lifecycle remains reconciling',async()=>{const fills=[fill('e','entry','buy',5,2),fill('m','manual','buy',2,3),fill('x','exit','sell',7,4)];assert.equal(findBotCloseBoundary({productId:1,entryOrderId:'entry',fills}),4000);const harness=stalePersistenceHarness(fills,[botOrder,{id:'manual',product_id:1,client_order_id:'user-order'},{id:'exit',product_id:1,reduce_only:true}]);await assert.rejects(harness.persist,/RECONCILIATION_INCOMPLETE/);assert.equal(harness.record().status,'RECONCILING');});
++test('oversized stale exit remains reconciling',async()=>{const fills=[fill('e','entry','buy',5,2),fill('x','exit','sell',7,3)];assert.equal(findBotCloseBoundary({productId:1,entryOrderId:'entry',fills}),null);const harness=stalePersistenceHarness(fills,[botOrder,{id:'exit',product_id:1,reduce_only:true}]);await assert.rejects(harness.persist,/RECONCILIATION_INCOMPLETE/);assert.equal(harness.record().status,'RECONCILING');});
++test('stale close with missing exit order evidence remains reconciling',async()=>{const fills=[fill('e','entry','buy',5,2),fill('x','missing-exit','sell',5,3)];const harness=stalePersistenceHarness(fills,[botOrder]);await assert.rejects(harness.persist,/RECONCILIATION_INCOMPLETE/);assert.equal(harness.record().status,'RECONCILING');});
++test('stale close with incomplete Delta pagination remains reconciling',async()=>{const fills=[fill('e','entry','buy',5,2),fill('x','exit','sell',5,3)];const harness=stalePersistenceHarness(fills,[botOrder,{id:'exit',product_id:1,reduce_only:true}],false);await assert.rejects(harness.persist,/RECONCILIATION_INCOMPLETE/);assert.equal(harness.record().status,'RECONCILING');});
++test('exact multiple bot exit fills allow stale reconciliation to close',async()=>{const fills=[fill('e','entry','buy',5,2),fill('x1','exit-1','sell',2,3),fill('x2','exit-2','sell',3,4)];assert.equal(findBotCloseBoundary({productId:1,entryOrderId:'entry',fills}),4000);const harness=stalePersistenceHarness(fills,[botOrder,{id:'exit-1',product_id:1,reduce_only:true},{id:'exit-2',product_id:1,reduce_only:true}]);await harness.persist();assert.equal(harness.record().status,'CLOSED');});
++
++const classifyExit=(side:'LONG'|'SHORT',exitOrder:any,exitPrice?:number)=>{const entrySide=side==='LONG'?'buy':'sell',exitSide=side==='LONG'?'sell':'buy';const entry={...fill('entry-fill','entry',entrySide,5,2),price:side==='LONG'?100:110};const exit={...fill('exit-fill','exit',exitSide,5,3),price:exitPrice??(side==='LONG'?110:100)};return classifyBotExitEvidence({side,productId:1,ownedContracts:5,entryOrderId:'entry',fills:[entry,exit],orders:[{...botOrder,side:entrySide},{id:'exit',product_id:1,...exitOrder}],windowStart:1000,windowEnd:4000,historyComplete:true,mixedPosition:false});};
++test('LONG TP fill remains a win when ticker later moves below TP',()=>{const tickerAfterClose=90;const result=classifyExit('LONG',{stop_order_type:'take_profit_order'});assert.ok(tickerAfterClose<110);assert.equal(result.outcome,'WIN');assert.equal(applyDailyLossOutcome(3,result.outcome),0);});
++test('SHORT TP fill remains a win when ticker later moves above TP',()=>{const tickerAfterClose=120;const result=classifyExit('SHORT',{stop_order_type:'take_profit_order'});assert.ok(tickerAfterClose>100);assert.equal(result.outcome,'WIN');assert.equal(applyDailyLossOutcome(2,result.outcome),0);});
++test('profitable bot manual close before TP resets rather than increments consecutive losses',()=>{const result=classifyExit('LONG',{reduce_only:true},105);assert.equal(result.exitReason,'MANUAL_CLOSE');assert.equal(result.outcome,'WIN');assert.equal(applyDailyLossOutcome(4,result.outcome),0);});
++test('losing bot manual close counts a realized loss without being labelled SL',()=>{const result=classifyExit('LONG',{reduce_only:true},95);assert.equal(result.exitReason,'MANUAL_CLOSE');assert.equal(result.outcome,'LOSS');assert.equal(applyDailyLossOutcome(4,result.outcome),5);});
++test('proven SL increments and proven TP resets exactly once at close transition',()=>{const sl=classifyExit('LONG',{stop_order_type:'stop_loss_order'},90),tp=classifyExit('LONG',{stop_order_type:'take_profit_order'},110);assert.equal(sl.exitReason,'SL');assert.equal(applyDailyLossOutcome(2,sl.outcome),3);assert.equal(tp.exitReason,'TP');assert.equal(applyDailyLossOutcome(2,tp.outcome),0);});
++test('unknown exit and MongoDB availability cannot fabricate a confirmed loss',()=>{const result=classifyBotExitEvidence({side:'LONG',productId:1,ownedContracts:5,entryOrderId:'entry',fills:[],orders:[],windowStart:1000,windowEnd:4000,historyComplete:false,mixedPosition:false});const mongoAvailable=false;assert.equal(mongoAvailable,false);assert.equal(result.outcome,'UNKNOWN');assert.equal(applyDailyLossOutcome(6,result.outcome),6);});
++
++const deltaEpochMs=1725865012000;
++const microFill=(fillId:string,orderId:string,side:'buy'|'sell',size:number,offsetMs:number)=>({id:fillId,order_id:orderId,product_id:1,side,size,price:side==='buy'?100:110,created_at:String((deltaEpochMs+offsetMs)*1000)});
++test('Delta timestamp normalization supports microsecond strings and numbers',()=>{assert.equal(deltaTimestampMilliseconds('1725865012000000'),1725865012000);assert.equal(deltaTimestampMilliseconds(1725865012000000),1725865012000);});
++test('Delta timestamp normalization supports milliseconds and ISO timestamps',()=>{assert.equal(deltaTimestampMilliseconds('1725865012000'),1725865012000);assert.equal(deltaTimestampMilliseconds(1725865012000),1725865012000);assert.equal(deltaTimestampMilliseconds('2026-08-30T12:00:00.000Z'),Date.parse('2026-08-30T12:00:00.000Z'));});
++test('Delta timestamp normalization safely rejects invalid values',()=>{for(const value of [null,undefined,'','not-a-timestamp','1234'])assert.equal(deltaTimestampMilliseconds(value),null);});
++test('bot TP and SL classification accepts Delta microsecond timestamps',()=>{const classify=(stop_order_type:string)=>classifyBotExitEvidence({side:'LONG',productId:1,ownedContracts:5,entryOrderId:'entry',fills:[microFill('entry-fill','entry','buy',5,0),microFill('exit-fill','exit','sell',5,1000)],orders:[{id:'entry',product_id:1,client_order_id:'ema-123'},{id:'exit',product_id:1,stop_order_type}],windowStart:deltaEpochMs-1000,windowEnd:deltaEpochMs+2000,historyComplete:true,mixedPosition:false});const tp=classify('take_profit_order'),sl=classify('stop_loss_order');assert.equal(tp.outcome,'WIN');assert.equal(tp.exitReason,'TP');assert.equal(sl.outcome,'LOSS');assert.equal(sl.exitReason,'SL');});
++test('bot ownership can be confirmed with Delta microsecond timestamps',()=>{const result=resolvePositionOwnership({lookupFailed:false,currentSize:5,productId:1,persisted:{entryOrderId:'entry',entryClientOrderId:'ema-123',entryTime:new Date(deltaEpochMs),side:'LONG',contracts:5},fills:[microFill('entry-fill','entry','buy',5,0)],orders:[{id:'entry',product_id:1,client_order_id:'ema-123'}],historyComplete:true});assert.equal(result.status,'BOT_CONFIRMED');});
++test('bot close boundary normalizes Delta microseconds to milliseconds',()=>{const boundary=findBotCloseBoundary({productId:1,entryOrderId:'entry',fills:[microFill('entry-fill','entry','buy',5,0),microFill('exit-fill','exit','sell',5,1000)]});assert.equal(boundary,deltaEpochMs+1000);});
+diff --git a/worker.ts b/worker.ts
+index fe10b4d..5bfd04b 100644
+--- a/worker.ts
++++ b/worker.ts
+@@ -1,7 +1,10 @@
+ import { config } from './lib/config';
+ import { emaSeries, evaluateSetup } from './lib/strategy';
+-import { getCandles, getProduct, getTicker, getWallet, getPosition, getOpenOrders, placeMarketOrder, placeBracket, setLeverage } from './lib/delta';
++import { getCandles, getProduct, getTicker, getWallet, getPosition, getOpenOrders, getFillsBounded, getOrderHistoryBounded, toDeltaMicroseconds, placeMarketOrder, placeBracket, setLeverage } from './lib/delta';
+ import { readControl, writeStatus } from './lib/state';
++import { persistClosedTrade, persistOpenBotTrade } from './lib/trades/persistence';
++import { findOpenBotTrade, findUnresolvedBotTrades, markTradeReconciling } from './lib/trades/repository';
++import { applyDailyLossOutcome, classifyBotExitEvidence, findBotCloseBoundary, resolvePositionOwnership } from './lib/trades/reconciliation';
+ 
+ let product:any = null;
+ let pending:any = null;
+@@ -30,11 +33,29 @@ let lastWalletFetchAt = 0;
+ let cachedPosition:any = null;
+ let cachedPositionSize = 0;
+ let lastPositionFetchAt = 0;
++let lastStaleReconciliationAt = 0;
+ 
+ const POSITION_REFRESH_MS = 5_000;
+ const WALLET_REFRESH_MS = 30_000;
+ const CANDLE_CLOSE_GRACE_SEC = 2;
+ const BRACKET_SYNC_MS = 5_000;
++const STALE_RECONCILIATION_MS = 60_000;
++
++function persistedSnapshot(record:any) {
++  return {tradeId:record.tradeId,direction:record.side==='SHORT'?'short':'long',source:'bot' as const,attributionStatus:'BOT_CONFIRMED',entryPrice:record.actualEntryPrice??record.intendedEntryPrice,trigger:record.intendedEntryPrice,sl:record.initialSL,tp:record.takeProfit,contracts:record.contracts,ownedContracts:record.contracts,contractValue:record.contractValue,orderId:record.entryOrderId,clientOrderId:record.entryClientOrderId,openedAt:record.entryTime?.valueOf?.()??null,mixedPosition:false};
++}
++
++async function reconcileStaleBotTrades(lastPrice:number) {
++  const now=Date.now(); if(!product||now-lastStaleReconciliationAt<STALE_RECONCILIATION_MS) return; lastStaleReconciliationAt=now;
++  let unresolved:any[];
++  try { unresolved=await findUnresolvedBotTrades(Number(product.id)); }
++  catch(error:any){addTradeEvent('TRADE_HISTORY_RECONCILIATION_FAILED',{reason:'MONGODB_LOOKUP_FAILED',error:error?.message||String(error)});return;}
++  for(const record of unresolved){
++    addTradeEvent('STALE_OPEN_TRADE_RECONCILING',{tradeId:record.tradeId});
++    try {const start=toDeltaMicroseconds(Math.max(0,(record.entryTime?.valueOf?.()??now)-60_000));const history=await getFillsBounded(Number(product.id),start);if(!history.complete)throw new Error('Delta fill history pagination incomplete');const boundary=record.entryOrderId?findBotCloseBoundary({productId:Number(product.id),entryOrderId:record.entryOrderId,fills:history.result}):null;if(boundary==null)throw new Error('No proven zero-position fill boundary for stale OPEN trade');const saved=await persistClosedTrade({...persistedSnapshot(record),closedAtBoundary:boundary},Number(product.id),config.symbol,null);addTradeEvent('STALE_OPEN_TRADE_RECONCILED',{tradeId:saved.tradeId,financialStatus:saved.financialStatus});}
++    catch(error:any){const message=error?.message||String(error);try{await markTradeReconciling(record.tradeId,message);}catch{}addTradeEvent('TRADE_HISTORY_RECONCILIATION_FAILED',{tradeId:record.tradeId,error:message});}
++  }
++}
+ 
+ function upsertUiLog(candleTime:number, patch:any) {
+   const i = uiLogs.findIndex((x:any) => x.candleTime === candleTime);
+@@ -119,17 +140,52 @@ async function refreshPosition(lastPrice:number, force = false) {
+   // entry price and bracket orders. No new setup/entry is allowed while it exists.
+   if (positionSize !== 0 && !activeTrade) {
+     const direction = positionSize > 0 ? 'long' : 'short';
+-    activeTrade = {
++    let persistedBot:any = null;
++    let lookupFailed=false;
++    try { persistedBot = await findOpenBotTrade(Number(product.id)); }
++    catch (error:any) { lookupFailed=true; addTradeEvent('TRADE_OWNERSHIP_LOOKUP_FAILED', { error:error?.message || String(error) }); }
++    let fills:any[]=[]; let orders:any[]=[]; let historyComplete=false;
++    try {const startMs=persistedBot?.entryTime?.valueOf?.()??Date.now()-30*24*60*60*1000;const [fillHistory,orderHistory]=await Promise.all([getFillsBounded(Number(product.id),toDeltaMicroseconds(Math.max(0,startMs-60_000))),getOrderHistoryBounded(Number(product.id),toDeltaMicroseconds(Math.max(0,startMs-60_000)))]);fills=fillHistory.result;orders=orderHistory.result;historyComplete=fillHistory.complete&&orderHistory.complete;}
++    catch(error:any){addTradeEvent('TRADE_OWNERSHIP_EVIDENCE_FAILED',{error:error?.message||String(error)});}
++    const ownership=resolvePositionOwnership({lookupFailed,currentSize:positionSize,productId:Number(product.id),persisted:persistedBot?{entryOrderId:persistedBot.entryOrderId,entryClientOrderId:persistedBot.entryClientOrderId,entryTime:persistedBot.entryTime,side:persistedBot.side,contracts:persistedBot.contracts}:null,fills,orders,historyComplete});
++    if(ownership.staleBotClosed&&persistedBot){void markTradeReconciling(persistedBot.tradeId,ownership.reason).catch(()=>{});addTradeEvent('STALE_OPEN_TRADE_RECONCILING',{tradeId:persistedBot.tradeId,reason:ownership.reason});}
++    activeTrade = ownership.status==='BOT_CONFIRMED' ? {
++      direction,
++      entryPrice:Number(position?.entry_price || persistedBot.actualEntryPrice || persistedBot.intendedEntryPrice || 0),
++      trigger:persistedBot.intendedEntryPrice,
++      sl:persistedBot.initialSL,
++      tp:persistedBot.takeProfit,
++      contracts:Math.abs(positionSize),
++      ownedContracts:ownership.botOwnedContracts,
++      contractValue:Number(persistedBot.contractValue || product?.contract_value || 0),
++      positionSize,
++      orderId:persistedBot.entryOrderId,
++      clientOrderId:persistedBot.entryClientOrderId,
++      openedAt:persistedBot.entryTime?.valueOf?.() ?? null,
++      source:'bot',
++      attributionStatus:'BOT_CONFIRMED',
++      mixedPosition:ownership.mixedPosition,
++      tradeId:persistedBot.tradeId,
++      exchangeSync:null
++    } : ownership.status==='MANUAL_CONFIRMED' ? {
+       direction,
+       entryPrice:Number(position?.entry_price || 0),
+       sl:null,
+       tp:null,
+       contracts:Math.abs(positionSize),
++      ownedContracts:Math.abs(positionSize),
++      contractValue:Number(product?.contract_value || 0),
+       positionSize,
+       orderId:null,
+       openedAt:null,
+       source:'exchange_existing',
++      attributionStatus:'MANUAL_CONFIRMED',
+       adoptedAt:Date.now(),
++      lastObservedAt:Date.now(),
++      mixedPosition:false,
++      exchangeSync:null
++    } : {
++      direction,entryPrice:Number(position?.entry_price||0),sl:null,tp:null,contracts:Math.abs(positionSize),ownedContracts:0,contractValue:Number(product?.contract_value||0),positionSize,orderId:null,openedAt:null,source:'unattributed',attributionStatus:ownership.status,adoptedAt:Date.now(),lastObservedAt:Date.now(),mixedPosition:true,
+       exchangeSync:null
+     };
+     pending = null;
+@@ -137,7 +193,8 @@ async function refreshPosition(lastPrice:number, force = false) {
+       direction,
+       positionSize,
+       entryPrice:Number(position?.entry_price || 0),
+-      source:'EXISTING_DELTA_POSITION'
++      source:ownership.status,
++      reason:ownership.reason
+     });
+   }
+ 
+@@ -145,30 +202,45 @@ async function refreshPosition(lastPrice:number, force = false) {
+   // A position that existed before app startup is synchronized and displayed,
+   // but its result is not added to the bot's daily loss streak.
+   if (previousPositionSize !== 0 && positionSize === 0 && activeTrade) {
+-    const tp = numeric(activeTrade.tp);
+-    const isAdopted = activeTrade.source === 'exchange_existing';
+-    const won = tp != null ? (activeTrade.direction === 'long' ? lastPrice >= tp : lastPrice <= tp) : false;
+-    if (!isAdopted) {
+-      if (won) lossStreak = 0;
+-      else lossStreak += 1;
++    const isBot = activeTrade.source === 'bot' && activeTrade.attributionStatus === 'BOT_CONFIRMED';
++    let exitClassification:any = { outcome:'UNKNOWN', exitReason:'UNKNOWN', reason:'Exit ownership is not confirmed' };
++    if (isBot) {
++      try {
++        const startMs=Math.max(0,(activeTrade.openedAt??Date.now())-60_000);
++        const [fillHistory,orderHistory]=await Promise.all([getFillsBounded(Number(product.id),toDeltaMicroseconds(startMs)),getOrderHistoryBounded(Number(product.id),toDeltaMicroseconds(startMs))]);
++        exitClassification=classifyBotExitEvidence({side:activeTrade.direction==='short'?'SHORT':'LONG',productId:Number(product.id),ownedContracts:Number(activeTrade.ownedContracts||0),entryOrderId:String(activeTrade.orderId||''),fills:fillHistory.result,orders:orderHistory.result,windowStart:startMs,windowEnd:Date.now()+5_000,historyComplete:fillHistory.complete&&orderHistory.complete,mixedPosition:activeTrade.mixedPosition===true});
++      } catch(error:any) {
++        exitClassification={outcome:'UNKNOWN',exitReason:'UNKNOWN',reason:error?.message||String(error)};
++      }
++      lossStreak=applyDailyLossOutcome(lossStreak,exitClassification.outcome);
++      addTradeEvent('BOT_EXIT_OUTCOME_CLASSIFIED',{outcome:exitClassification.outcome,exitReason:exitClassification.exitReason,actualExitPrice:exitClassification.actualExitPrice??null,reason:exitClassification.reason,lossStreak});
+     }
+     addTradeEvent('POSITION_CLOSED', {
+       direction:activeTrade.direction,
+       lastPrice,
+-      syncedTp:tp,
+-      source:isAdopted?'EXISTING_DELTA_POSITION':'BOT',
+-      classifiedAs:isAdopted?'EXTERNAL_POSITION_CLOSED':(won?'WIN':'LOSS_OR_MANUAL_CLOSE')
++      syncedTp:numeric(activeTrade.tp),
++      source:isBot?'BOT':activeTrade.source==='exchange_existing'?'EXISTING_DELTA_POSITION':'UNATTRIBUTED',
++      classifiedAs:isBot?exitClassification.outcome:activeTrade.source==='exchange_existing'?'EXTERNAL_POSITION_CLOSED':'OWNERSHIP_UNCERTAIN',
++      exitReason:isBot?exitClassification.exitReason:'UNKNOWN'
+     });
++    const closedTrade = { ...activeTrade };
++    void persistClosedTrade(closedTrade, Number(product.id), config.symbol, lastPrice)
++      .then(saved => {addTradeEvent('TRADE_HISTORY_PERSISTED', { tradeId:saved.tradeId, source:saved.source, financialStatus:saved.financialStatus });if(saved.reconciliationError)addTradeEvent('TRADE_FILL_ATTRIBUTION_UNCERTAIN',{tradeId:saved.tradeId,reason:saved.reconciliationError});if(saved.financialStatus!=='actual')addTradeEvent('TRADE_FINANCIALS_PARTIAL',{tradeId:saved.tradeId,financialStatus:saved.financialStatus});})
++      .catch(error => {const message=error?.message||String(error);addTradeEvent(message.includes('RECONCILIATION_UNRESOLVED')?'TRADE_HISTORY_RECONCILIATION_UNRESOLVED':'TRADE_HISTORY_RECONCILIATION_FAILED', { source:closedTrade.source, error:message });});
+     activeTrade = null;
+   }
+ 
+   // Keep the adopted/live trade details synchronized with the current Delta position.
+   if (positionSize !== 0 && activeTrade) {
++    if(activeTrade.source==='bot'&&Math.abs(positionSize)!==Number(activeTrade.ownedContracts||0)) activeTrade.mixedPosition=true;
+     activeTrade.positionSize = positionSize;
+     activeTrade.contracts = Math.abs(positionSize);
+     activeTrade.entryPrice = Number(position?.entry_price || activeTrade.entryPrice || 0);
++    activeTrade.lastObservedAt=Date.now();
+   }
+ 
++  if(positionSize===0&&!activeTrade) void reconcileStaleBotTrades(lastPrice);
++
+   cachedPosition = position;
+   cachedPositionSize = positionSize;
+   previousPositionSize = positionSize;
+@@ -480,7 +552,10 @@ async function cycle() {
+                 });
+               }
+ 
+-              activeTrade = { direction:pending.direction, entryPrice:pending.trigger, sl, tp, contracts, positionSize:pending.direction === 'long' ? contracts : -contracts, orderId:order?.result?.id, openedAt:Date.now(), source:'bot', exchangeSync:null };
++              activeTrade = { direction:pending.direction, entryPrice:pending.trigger, trigger:pending.trigger, sl, tp, contracts, ownedContracts:contracts, contractValue, positionSize:pending.direction === 'long' ? contracts : -contracts, orderId:order?.result?.id, clientOrderId:oid, openedAt:Date.now(), lastObservedAt:Date.now(), riskAmount, takerRate, gstPct:config.gstPct, source:'bot', attributionStatus:'BOT_CONFIRMED', mixedPosition:false, exchangeSync:null };
++              void persistOpenBotTrade(activeTrade, Number(product.id), config.symbol)
++                .then(() => addTradeEvent('BOT_OWNERSHIP_PERSISTED', { orderId:order?.result?.id ?? null }))
++                .catch(error => addTradeEvent('TRADE_HISTORY_PERSISTENCE_FAILED', { source:'bot', error:error?.message || String(error) }));
+               addTradeEvent('BRACKET_SENT', { orderId:order?.result?.id ?? null, sl, tp, triggerMethod });
+ 
+               // Force a fresh position snapshot on the next cycle.
+@@ -573,7 +648,9 @@ async function cycle() {
+       : cachedPositionSize !== 0
+         ? activeTrade?.source === 'exchange_existing'
+           ? { action:'ACTIVE', reason:'EXISTING_POSITION', source:'exchange_existing', at:new Date().toISOString() }
+-          : { action:'ENTRY', reason:'ALGO_POSITION_OPEN', source:activeTrade?.source || 'bot', at:new Date().toISOString() }
++          : activeTrade?.source === 'bot'
++            ? { action:'ENTRY', reason:'ALGO_POSITION_OPEN', source:'bot', at:new Date().toISOString() }
++            : { action:'ACTIVE', reason:'OWNERSHIP_UNCERTAIN', source:'unattributed', at:new Date().toISOString() }
+         : { action:decision.action, reason:decision.reason || (pending ? 'WAITING_FOR_BREAKOUT' : 'NO_VALID_SETUP'), at:new Date().toISOString() },
+     tradeEvents,
+     logs:uiLogs
+diff --git a/app/api/trades/route.ts b/app/api/trades/route.ts
+new file mode 100644
+index 0000000..b6881bf
+--- /dev/null
++++ b/app/api/trades/route.ts
+@@ -0,0 +1,16 @@
++import { NextRequest, NextResponse } from 'next/server';
++import { requireApiSession } from '../../../lib/auth/api';
++import { listTrades } from '../../../lib/trades/repository';
++import type { TradeSource } from '../../../models/Trade';
++export const dynamic='force-dynamic';
++
++export async function GET(req:NextRequest) {
++  const auth=await requireApiSession(req); if(!auth.ok) return auth.error;
++  const sp=req.nextUrl.searchParams;
++  const page=Number(sp.get('page')??1), limit=Number(sp.get('limit')??25), source=sp.get('source'), symbol=sp.get('symbol');
++  if(!Number.isInteger(page)||page<1) return NextResponse.json({error:'Invalid page'},{status:400});
++  if(!Number.isInteger(limit)||limit<1||limit>100) return NextResponse.json({error:'Invalid limit (1-100)'},{status:400});
++  if(source && source!=='bot' && source!=='exchange_existing') return NextResponse.json({error:'Invalid source'},{status:400});
++  if(symbol && !/^[A-Z0-9_-]{1,30}$/.test(symbol)) return NextResponse.json({error:'Invalid symbol'},{status:400});
++  return NextResponse.json(await listTrades({page,limit,source:source as TradeSource|undefined,symbol:symbol||undefined}));
++}
+diff --git a/app/api/trades/stats/route.ts b/app/api/trades/stats/route.ts
+new file mode 100644
+index 0000000..ee26c96
+--- /dev/null
++++ b/app/api/trades/stats/route.ts
+@@ -0,0 +1,5 @@
++import { NextRequest, NextResponse } from 'next/server';
++import { requireApiSession } from '../../../../lib/auth/api';
++import { getTradeStats } from '../../../../lib/trades/repository';
++export const dynamic='force-dynamic';
++export async function GET(req:NextRequest){const auth=await requireApiSession(req);if(!auth.ok)return auth.error;return NextResponse.json(await getTradeStats());}
+diff --git a/app/trades.css b/app/trades.css
+new file mode 100644
+index 0000000..a6b956a
+--- /dev/null
++++ b/app/trades.css
+@@ -0,0 +1,5 @@
++.performanceGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(280px,1fr));gap:12px}
++.performanceCard{margin-top:0}.netValue{display:block;color:#ffb000;font-size:17px;margin:14px 0}
++.statRows{display:grid;gap:8px}.statRows span{display:flex;justify-content:space-between;gap:12px;color:#a9987a}.statRows b{color:#e8dcc0}
++.tableScroll{overflow-x:auto}table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap}
++th,td{text-align:left;padding:9px;border-bottom:1px solid #33280e}th{color:#ffb000}.tradeHistoryPanel{max-width:100%}
+diff --git a/lib/trades/persistence.ts b/lib/trades/persistence.ts
+new file mode 100644
+index 0000000..790ba73
+--- /dev/null
++++ b/lib/trades/persistence.ts
+@@ -0,0 +1,70 @@
++import { config } from '../config';
++import { getFillsBounded, getOrderHistoryBounded, toDeltaMicroseconds } from '../delta';
++import type { TradeDocument, TradeExitReason, TradeSide, TradeSource } from '../../models/Trade';
++import { attributeTradeFills, financials, stableTradeId, weightedAverage, type DeltaFill } from './reconciliation';
++import { upsertTrade } from './repository';
++
++const id=(v:unknown)=>v==null?null:String(v);
++const date=(v:unknown)=>{const d=v?new Date(String(v)):null;return d&&!Number.isNaN(d.valueOf())?d:null;};
++const num=(v:unknown)=>{const n=Number(v);return v!==null&&v!==''&&Number.isFinite(n)?n:null;};
++const fillId=(f:DeltaFill)=>id(f.id);
++export interface TradePersistenceDependencies {upsert:typeof upsertTrade;fills:typeof getFillsBounded;orders:typeof getOrderHistoryBounded;now:()=>number;}
++const defaultDependencies:TradePersistenceDependencies={upsert:upsertTrade,fills:getFillsBounded,orders:getOrderHistoryBounded,now:()=>Date.now()};
++
++export interface ActiveTradeSnapshot {
++  direction?:string; source?:TradeSource; entryPrice?:number; trigger?:number; sl?:number|null; tp?:number|null;
++  contracts?:number; ownedContracts?:number; contractValue?:number; orderId?:string|number|null; clientOrderId?:string|null;
++  openedAt?:number|null; adoptedAt?:number|null; riskAmount?:number|null; takerRate?:number|null; gstPct?:number|null;
++  lastObservedAt?:number|null; attributionStatus?:string; mixedPosition?:boolean;
++  tradeId?:string|null;
++  closedAtBoundary?:number|null;
++}
++
++export async function persistOpenBotTrade(trade:ActiveTradeSnapshot, productId:number, symbol:string,dependencies:TradePersistenceDependencies=defaultDependencies) {
++  const entryOrderId=id(trade.orderId); const tradeId=stableTradeId('bot',productId,entryOrderId,[],[]);
++  if(!tradeId) throw new Error('Cannot persist bot ownership without an exchange order identifier');
++  const side:TradeSide=trade.direction==='short'?'SHORT':'LONG'; const contracts=num(trade.ownedContracts??trade.contracts); const cv=num(trade.contractValue);
++  await dependencies.upsert({tradeId,symbol,productId,side,source:'bot',attributionStatus:'BOT_CONFIRMED',status:'OPEN',entryTime:trade.openedAt?new Date(trade.openedAt):null,intendedEntryPrice:num(trade.trigger??trade.entryPrice),actualEntryPrice:null,quantity:contracts!=null&&cv!=null?contracts*cv:null,contracts,contractValue:cv,initialSL:num(trade.sl),takeProfit:num(trade.tp),exitTime:null,intendedExitPrice:null,actualExitPrice:null,exitReason:'UNKNOWN',grossPnL:null,brokerage:null,GST:null,otherCharges:null,totalCharges:null,netPnL:null,estimatedBrokerage:null,estimatedGST:null,estimatedTotalCharges:null,estimatedNetPnL:null,realizedR:null,entryOrderId,exitOrderId:null,entryClientOrderId:trade.clientOrderId??null,exitClientOrderId:null,entryFillIds:[],exitFillIds:[],financialStatus:'unavailable',feeDataSource:null,priceDataSource:null,attributionNote:null,reconciliationError:null,reconciledAt:null});
++}
++
++function exitReason(order:any):TradeExitReason {
++  if(order?.stop_order_type==='stop_loss_order') return 'SL';
++  if(order?.stop_order_type==='take_profit_order') return 'TP';
++  return 'UNKNOWN';
++}
++
++export async function persistClosedTrade(trade:ActiveTradeSnapshot, productId:number, symbol:string, observedExitPrice:number|null,dependencies:TradePersistenceDependencies=defaultDependencies) {
++  const source:TradeSource=trade.source==='bot'?'bot':'exchange_existing';
++  if(trade.attributionStatus==='UNKNOWN'||trade.attributionStatus==='LOOKUP_FAILED'||(trade.source!=='bot'&&trade.source!=='exchange_existing')) throw new Error('TRADE_HISTORY_RECONCILIATION_UNRESOLVED: ownership is not confirmed');
++  const side:TradeSide=trade.direction==='short'?'SHORT':'LONG';
++  const openedMs=trade.openedAt??trade.adoptedAt??dependencies.now()-24*60*60*1000;
++  const startMicros=toDeltaMicroseconds(Math.max(0,openedMs-60_000));
++  const [fillsResponse,ordersResponse]=await Promise.all([dependencies.fills(productId,startMicros),dependencies.orders(productId,startMicros)]);
++  const fills:DeltaFill[]=Array.isArray(fillsResponse?.result)?fillsResponse.result:[];
++  const orders:any[]=Array.isArray(ordersResponse?.result)?ordersResponse.result:[];
++  const entryOrderId=id(trade.orderId);
++  const targetContracts=Math.abs(Number(trade.ownedContracts??trade.contracts??0));
++  const windowStart=source==='exchange_existing'?(trade.lastObservedAt??trade.adoptedAt??openedMs):openedMs-60_000;
++  const attribution=attributeTradeFills({source,side,productId,ownedContracts:targetContracts,entryOrderId,fills,orders,windowStart,windowEnd:trade.closedAtBoundary??dependencies.now()+5_000,historyComplete:fillsResponse.complete&&ordersResponse.complete,mixedPosition:trade.mixedPosition===true});
++  if(trade.closedAtBoundary!=null&&!attribution.complete) throw new Error(`TRADE_HISTORY_RECONCILIATION_INCOMPLETE: ${attribution.reason}`);
++  const entryFills=attribution.entryFills, exitFills=attribution.exitFills;
++  const entryFillIds=entryFills.map(fillId).filter((v):v is string=>!!v), exitFillIds=exitFills.map(fillId).filter((v):v is string=>!!v);
++  const resolvedId=stableTradeId(source,productId,entryOrderId,entryFillIds,exitFillIds);
++  if(!resolvedId) throw new Error('No stable exchange identity available; refusing timestamp-only trade persistence');
++  const tradeId=trade.tradeId??resolvedId;
++  const contracts=num(trade.ownedContracts??trade.contracts), cv=num(trade.contractValue), quantity=contracts!=null&&cv!=null?contracts*cv:contracts;
++  const actualEntry=weightedAverage(entryFills)??(source==='exchange_existing'?num(trade.entryPrice):null);
++  const actualExit=weightedAverage(exitFills);
++  const entryForPnl=actualEntry;
++  const exitForPnl=actualExit;
++  const estimateEntry=entryForPnl??num(trade.entryPrice), estimateExit=actualExit??num(observedExitPrice);
++  const rate=num(trade.takerRate); const estimatedBrokerage=rate!=null&&quantity!=null&&estimateEntry!=null&&estimateExit!=null?quantity*(estimateEntry+estimateExit)*rate:null;
++  const gstPct=num(trade.gstPct??config.gstPct); const estimatedGST=estimatedBrokerage!=null&&gstPct!=null?estimatedBrokerage*gstPct/100:null;
++  const money=financials({side,entry:entryForPnl,exit:exitForPnl,quantity,entryFills,exitFills,estimatedBrokerage,estimatedGST});
++  const exitOrderId=id(exitFills[0]?.order_id); const exitOrder=orders.find(o=>id(o.id)===exitOrderId);
++  const exitAt=exitFills.map(f=>date(f.created_at)).filter((v):v is Date=>!!v).sort((a,b)=>b.valueOf()-a.valueOf())[0]??new Date(dependencies.now());
++  const risk=num(trade.riskAmount); const realizedR=risk&&money.netPnL!=null?money.netPnL/risk:null;
++  const doc:Omit<TradeDocument,'_id'|'createdAt'|'updatedAt'>={tradeId,symbol,productId,side,source,attributionStatus:source==='bot'?'BOT_CONFIRMED':'MANUAL_CONFIRMED',status:'CLOSED',entryTime:entryFills.map(f=>date(f.created_at)).filter((v):v is Date=>!!v).sort((a,b)=>a.valueOf()-b.valueOf())[0]??(trade.openedAt?new Date(trade.openedAt):null),intendedEntryPrice:num(trade.trigger??trade.entryPrice),actualEntryPrice:actualEntry,quantity,contracts,contractValue:cv,initialSL:num(trade.sl),takeProfit:num(trade.tp),exitTime:attribution.complete?exitAt:new Date(dependencies.now()),intendedExitPrice:num(observedExitPrice),actualExitPrice:actualExit,exitReason:attribution.complete?exitReason(exitOrder):'UNKNOWN',...money,realizedR,entryOrderId,exitOrderId,entryClientOrderId:trade.clientOrderId??null,exitClientOrderId:id(exitOrder?.client_order_id),entryFillIds,exitFillIds,reconciledAt:new Date(dependencies.now()),feeDataSource:money.brokerage!=null?'delta_fills_commission':estimatedBrokerage!=null?'configured_rate_estimate':null,priceDataSource:source==='exchange_existing'&&actualExit!=null?'delta_position_average_and_exit_fills':actualEntry!=null&&actualExit!=null?'delta_weighted_fills':actualExit!=null?'partial_delta_fills':'unavailable',attributionNote:attribution.reason,reconciliationError:attribution.complete?null:attribution.reason};
++  await dependencies.upsert(doc);
++  return doc;
++}
+diff --git a/lib/trades/repository.ts b/lib/trades/repository.ts
+new file mode 100644
+index 0000000..374ea71
+--- /dev/null
++++ b/lib/trades/repository.ts
+@@ -0,0 +1,60 @@
++import type { Filter } from 'mongodb';
++import { getDb } from '../db/mongodb';
++import type { TradeDocument, TradeSource } from '../../models/Trade';
++import { emptyStats, type TradeStats } from './statistics';
++
++let indexesReady: Promise<void>|null = null;
++async function collection() {
++  const db = await getDb();
++  const trades = db.collection<TradeDocument>('trades');
++  indexesReady ||= Promise.all([
++    trades.createIndex({ tradeId:1 }, { unique:true, name:'trade_identity_unique' }),
++    trades.createIndex({ source:1, exitTime:-1 }, { name:'source_exit_time' }),
++    trades.createIndex({ symbol:1, exitTime:-1 }, { name:'symbol_exit_time' }),
++    trades.createIndex({ exitTime:-1 }, { name:'exit_time' }),
++    trades.createIndex({ createdAt:-1 }, { name:'created_at' })
++  ]).then(() => undefined).catch(error => { indexesReady=null; throw error; });
++  await indexesReady;
++  return trades;
++}
++
++export async function upsertTrade(trade: Omit<TradeDocument,'_id'|'createdAt'|'updatedAt'> & Partial<Pick<TradeDocument,'createdAt'|'updatedAt'>>) {
++  const trades = await collection();
++  const now = new Date();
++  const { createdAt, ...fields } = trade;
++  await trades.updateOne({ tradeId:trade.tradeId }, { $set:{...fields,updatedAt:now}, $setOnInsert:{createdAt:createdAt??now} }, { upsert:true });
++  return trades.findOne({tradeId:trade.tradeId});
++}
++
++export async function listTrades(options:{page:number;limit:number;source?:TradeSource;symbol?:string}) {
++  const trades = await collection();
++  const filter:Filter<TradeDocument> = {status:'CLOSED'};
++  if (options.source) filter.source=options.source;
++  if (options.symbol) filter.symbol=options.symbol;
++  const [rows,total] = await Promise.all([
++    trades.find(filter).sort({exitTime:-1,createdAt:-1}).skip((options.page-1)*options.limit).limit(options.limit).toArray(),
++    trades.countDocuments(filter)
++  ]);
++  return {trades:rows.map(({_id,...row})=>({...row,id:_id?.toHexString()})),page:options.page,limit:options.limit,total,totalPages:Math.ceil(total/options.limit)};
++}
++
++const sum = (field:string) => ({$sum:{$ifNull:[`$${field}`,0]}});
++const scopePipeline = (source?:TradeSource) => [
++  {$match:{status:'CLOSED',source:source??{$in:['bot','exchange_existing']}}},
++  {$group:{_id:null,totalTrades:{$sum:1},winningTrades:{$sum:{$cond:[{$gt:['$grossPnL',0]},1,0]}},losingTrades:{$sum:{$cond:[{$lt:['$grossPnL',0]},1,0]}},grossPnL:sum('grossPnL'),brokerage:sum('brokerage'),GST:sum('GST'),otherCharges:sum('otherCharges'),totalCharges:sum('totalCharges'),netPnL:sum('netPnL'),realizedR:sum('realizedR'),realizedRCount:{$sum:{$cond:[{$ne:['$realizedR',null]},1,0]}},grossPnLReportedTrades:{$sum:{$cond:[{$ne:['$grossPnL',null]},1,0]}},fullyReconciledTrades:{$sum:{$cond:[{$ne:['$netPnL',null]},1,0]}},brokerageReportedTrades:{$sum:{$cond:[{$ne:['$brokerage',null]},1,0]}},gstReportedTrades:{$sum:{$cond:[{$ne:['$GST',null]},1,0]}},totalChargesReportedTrades:{$sum:{$cond:[{$ne:['$totalCharges',null]},1,0]}}}},
++  {$project:{_id:0,totalTrades:1,winningTrades:1,losingTrades:1,winRate:{$cond:[{$gt:['$grossPnLReportedTrades',0]},{$multiply:[{$divide:['$winningTrades','$grossPnLReportedTrades']},100]},0]},grossPnL:1,brokerage:1,GST:1,otherCharges:1,totalCharges:1,netPnL:1,realizedR:{$cond:[{$gt:['$realizedRCount',0]},'$realizedR',null]},fullyReconciledTrades:1,brokerageReportedTrades:1,gstReportedTrades:1,grossPnLReportedTrades:1,totalChargesReportedTrades:1,grossPnLComplete:{$and:[{$gt:['$totalTrades',0]},{$eq:['$grossPnLReportedTrades','$totalTrades']}]},brokerageComplete:{$and:[{$gt:['$totalTrades',0]},{$eq:['$brokerageReportedTrades','$totalTrades']}]},gstComplete:{$and:[{$gt:['$totalTrades',0]},{$eq:['$gstReportedTrades','$totalTrades']}]},totalChargesComplete:{$and:[{$gt:['$totalTrades',0]},{$eq:['$totalChargesReportedTrades','$totalTrades']}]},netPnLComplete:{$and:[{$gt:['$totalTrades',0]},{$eq:['$fullyReconciledTrades','$totalTrades']}]},winRateBasis:{$literal:'gross_actual'}}}
++];
++
++export async function getTradeStats():Promise<{bot:TradeStats;manual:TradeStats;account:TradeStats}> {
++  const trades=await collection();
++  const [row] = await trades.aggregate<{bot:TradeStats[];manual:TradeStats[];account:TradeStats[]}>([{$facet:{bot:scopePipeline('bot'),manual:scopePipeline('exchange_existing'),account:scopePipeline()}}]).toArray();
++  return {bot:row?.bot[0]??emptyStats(),manual:row?.manual[0]??emptyStats(),account:row?.account[0]??emptyStats()};
++}
++
++export async function findOpenBotTrade(productId:number) {
++  return (await collection()).findOne({productId,source:'bot',status:{$in:['OPEN','RECONCILING']}} as Filter<TradeDocument>,{sort:{createdAt:-1}});
++}
++
++export async function findUnresolvedBotTrades(productId:number){return (await collection()).find({productId,source:'bot',status:{$in:['OPEN','RECONCILING']}} as Filter<TradeDocument>).sort({createdAt:1}).toArray();}
++
++export async function markTradeReconciling(tradeId:string,error:string){const now=new Date();await (await collection()).updateOne({tradeId},{$set:{status:'RECONCILING',attributionStatus:'UNKNOWN',reconciliationError:error,attributionNote:error,updatedAt:now}});}
+diff --git a/lib/trades/statistics.ts b/lib/trades/statistics.ts
+new file mode 100644
+index 0000000..0d548d6
+--- /dev/null
++++ b/lib/trades/statistics.ts
+@@ -0,0 +1,45 @@
++import type { TradeDocument, TradeSource } from '../../models/Trade';
++
++export interface TradeStats {
++  totalTrades: number; winningTrades: number; losingTrades: number; winRate: number;
++  grossPnL: number; brokerage: number; GST: number; otherCharges: number;
++  totalCharges: number; netPnL: number; realizedR: number | null;
++  fullyReconciledTrades: number;
++  brokerageReportedTrades: number; gstReportedTrades: number;
++  grossPnLReportedTrades:number; totalChargesReportedTrades:number;
++  grossPnLComplete:boolean; brokerageComplete:boolean; gstComplete:boolean; totalChargesComplete:boolean; netPnLComplete:boolean;
++  winRateBasis:'gross_actual';
++}
++
++export const emptyStats = (): TradeStats => ({ totalTrades:0, winningTrades:0, losingTrades:0, winRate:0, grossPnL:0, brokerage:0, GST:0, otherCharges:0, totalCharges:0, netPnL:0, realizedR:null, fullyReconciledTrades:0, brokerageReportedTrades:0, gstReportedTrades:0, grossPnLReportedTrades:0,totalChargesReportedTrades:0,grossPnLComplete:false,brokerageComplete:false,gstComplete:false,totalChargesComplete:false,netPnLComplete:false,winRateBasis:'gross_actual' });
++
++export function calculateStats(trades: Pick<TradeDocument, 'source'|'status'|'grossPnL'|'brokerage'|'GST'|'otherCharges'|'totalCharges'|'netPnL'|'realizedR'|'financialStatus'>[], source?: TradeSource): TradeStats {
++  const rows = trades.filter(t => t.status === 'CLOSED' && (!source || t.source === source));
++  const out = emptyStats();
++  let rCount = 0;
++  for (const t of rows) {
++    out.totalTrades++;
++    if (t.grossPnL != null && t.grossPnL > 0) out.winningTrades++;
++    else if (t.grossPnL != null && t.grossPnL < 0) out.losingTrades++;
++    out.grossPnL += t.grossPnL ?? 0;
++    out.brokerage += t.brokerage ?? 0;
++    out.GST += t.GST ?? 0;
++    out.otherCharges += t.otherCharges ?? 0;
++    out.totalCharges += t.totalCharges ?? 0;
++    out.netPnL += t.netPnL ?? 0;
++    if (t.realizedR != null) { out.realizedR = (out.realizedR ?? 0) + t.realizedR; rCount++; }
++    if (t.netPnL != null) out.fullyReconciledTrades++;
++    if (t.brokerage != null) out.brokerageReportedTrades++;
++    if (t.GST != null) out.gstReportedTrades++;
++    if (t.grossPnL != null) out.grossPnLReportedTrades++;
++    if (t.totalCharges != null) out.totalChargesReportedTrades++;
++  }
++  out.winRate = out.grossPnLReportedTrades ? out.winningTrades / out.grossPnLReportedTrades * 100 : 0;
++  out.grossPnLComplete=out.totalTrades>0&&out.grossPnLReportedTrades===out.totalTrades;
++  out.brokerageComplete=out.totalTrades>0&&out.brokerageReportedTrades===out.totalTrades;
++  out.gstComplete=out.totalTrades>0&&out.gstReportedTrades===out.totalTrades;
++  out.totalChargesComplete=out.totalTrades>0&&out.totalChargesReportedTrades===out.totalTrades;
++  out.netPnLComplete=out.totalTrades>0&&out.fullyReconciledTrades===out.totalTrades;
++  if (!rCount) out.realizedR = null;
++  return out;
++}
+diff --git a/models/Trade.ts b/models/Trade.ts
+new file mode 100644
+index 0000000..4fa776c
+--- /dev/null
++++ b/models/Trade.ts
+@@ -0,0 +1,56 @@
++import type { ObjectId } from 'mongodb';
++
++export type TradeSource = 'bot' | 'exchange_existing';
++export type AttributionStatus = 'BOT_CONFIRMED' | 'MANUAL_CONFIRMED' | 'UNKNOWN' | 'LOOKUP_FAILED';
++export type TradeSide = 'LONG' | 'SHORT';
++export type TradeExitReason = 'SL' | 'TP' | 'MANUAL_CLOSE' | 'OTHER' | 'UNKNOWN';
++export type FinancialStatus = 'actual' | 'partial' | 'estimated' | 'unavailable';
++export type ReconciliationStatus = 'OPEN' | 'CLOSED' | 'RECONCILING' | 'FAILED';
++
++export interface TradeDocument {
++  _id?: ObjectId;
++  tradeId: string;
++  symbol: string;
++  productId: number;
++  side: TradeSide;
++  source: TradeSource;
++  attributionStatus: AttributionStatus;
++  status: ReconciliationStatus;
++  entryTime: Date | null;
++  intendedEntryPrice: number | null;
++  actualEntryPrice: number | null;
++  quantity: number | null;
++  contracts: number | null;
++  contractValue: number | null;
++  initialSL: number | null;
++  takeProfit: number | null;
++  exitTime: Date | null;
++  intendedExitPrice: number | null;
++  actualExitPrice: number | null;
++  exitReason: TradeExitReason;
++  grossPnL: number | null;
++  brokerage: number | null;
++  GST: number | null;
++  otherCharges: number | null;
++  totalCharges: number | null;
++  netPnL: number | null;
++  estimatedBrokerage: number | null;
++  estimatedGST: number | null;
++  estimatedTotalCharges: number | null;
++  estimatedNetPnL: number | null;
++  realizedR: number | null;
++  entryOrderId: string | null;
++  exitOrderId: string | null;
++  entryClientOrderId: string | null;
++  exitClientOrderId: string | null;
++  entryFillIds: string[];
++  exitFillIds: string[];
++  financialStatus: FinancialStatus;
++  feeDataSource: string | null;
++  priceDataSource: string | null;
++  attributionNote: string | null;
++  reconciliationError: string | null;
++  createdAt: Date;
++  updatedAt: Date;
++  reconciledAt: Date | null;
++}
+diff --git a/tests/trades-integration.test.ts b/tests/trades-integration.test.ts
+new file mode 100644
+index 0000000..67cf88c
+--- /dev/null
++++ b/tests/trades-integration.test.ts
+@@ -0,0 +1,27 @@
++import assert from 'node:assert/strict';
++import crypto from 'node:crypto';
++import test from 'node:test';
++import { MongoClient, ObjectId } from 'mongodb';
++import { NextRequest } from 'next/server';
++import { getMongoClient } from '../lib/db/mongodb';
++
++const uri=process.env.TRADE_TEST_MONGODB_URI;
++test('MongoDB trade upsert, indexes, statistics, authentication and pagination',{skip:!uri},async()=>{
++  const databaseName=`trade_test_${crypto.randomBytes(8).toString('hex')}`;process.env.MONGODB_URI=uri;process.env.MONGODB_DB=databaseName;process.env.AUTH_SECRET='trade-test-auth-secret-at-least-32-characters';
++  const applicationMongo=await getMongoClient();const mongo=new MongoClient(uri as string);
++  try{
++    await mongo.connect();
++    const repository=await import('../lib/trades/repository');const session=await import('../lib/auth/session');const historyRoute=await import('../app/api/trades/route');const statsRoute=await import('../app/api/trades/stats/route');
++    const base:any={tradeId:'bot:1:stable',symbol:'XAUTUSD',productId:1,side:'LONG',source:'bot',attributionStatus:'BOT_CONFIRMED',status:'CLOSED',entryTime:new Date(),intendedEntryPrice:100,actualEntryPrice:100,quantity:1,contracts:1,contractValue:1,initialSL:90,takeProfit:120,exitTime:new Date(),intendedExitPrice:110,actualExitPrice:110,exitReason:'TP',grossPnL:10,brokerage:1,GST:0.18,otherCharges:0,totalCharges:1.18,netPnL:8.82,estimatedBrokerage:null,estimatedGST:null,estimatedTotalCharges:null,estimatedNetPnL:null,realizedR:0.882,entryOrderId:'10',exitOrderId:'11',entryClientOrderId:'ema-test',exitClientOrderId:null,entryFillIds:['100'],exitFillIds:['101'],financialStatus:'actual',feeDataSource:'delta_fills_commission',priceDataSource:'delta_weighted_fills',attributionNote:null,reconciliationError:null,reconciledAt:new Date()};
++    await repository.upsertTrade({...base,status:'OPEN',exitTime:null});await repository.upsertTrade(base);await repository.upsertTrade({...base,grossPnL:11});assert.equal(await mongo.db(databaseName).collection('trades').countDocuments(),1);assert.equal((await mongo.db(databaseName).collection('trades').findOne({tradeId:base.tradeId}))?.status,'CLOSED');
++    await repository.upsertTrade({...base,tradeId:'manual:1:stable',source:'exchange_existing',attributionStatus:'MANUAL_CONFIRMED',entryOrderId:null,entryClientOrderId:null});
++    const stats=await repository.getTradeStats();assert.equal(stats.bot.totalTrades,1);assert.equal(stats.manual.totalTrades,1);assert.equal(stats.account.totalTrades,2);assert.equal(stats.account.brokerage,stats.bot.brokerage+stats.manual.brokerage);assert.equal(stats.account.brokerageReportedTrades,stats.bot.brokerageReportedTrades+stats.manual.brokerageReportedTrades);assert.equal(stats.account.netPnLComplete,true);
++    const userId=new ObjectId();await mongo.db(databaseName).collection('users').insertOne({_id:userId,email:'trade@example.test',passwordHash:'unused',role:'admin',createdAt:new Date(),updatedAt:new Date()});const auth=await session.createSession(userId);const cookie=`trading_session=${auth.token}`;
++    assert.equal((await historyRoute.GET(new NextRequest('http://localhost/api/trades?source=invalid',{headers:{cookie}}))).status,400);assert.equal((await historyRoute.GET(new NextRequest('http://localhost/api/trades?limit=101',{headers:{cookie}}))).status,400);
++    const page=await historyRoute.GET(new NextRequest('http://localhost/api/trades?source=bot&limit=1',{headers:{cookie}}));assert.equal(page.status,200);assert.equal((await page.json()).trades.length,1);assert.equal((await statsRoute.GET(new NextRequest('http://localhost/api/trades/stats',{headers:{cookie}}))).status,200);
++    const indexes=await mongo.db(databaseName).collection('trades').indexInformation();assert.ok(indexes.trade_identity_unique);assert.ok(indexes.source_exit_time);assert.ok(indexes.symbol_exit_time);
++  }finally{
++    try{await mongo.db(databaseName).dropDatabase();}
++    finally{try{await mongo.close();}finally{await applicationMongo.close();}}
++  }
++});

@@ -6,6 +6,8 @@ export default function TradingDashboard() {
   const [s, setS] = useState<any>({});
   const [controlBusy, setControlBusy] = useState(false);
   const [csrfToken, setCsrfToken] = useState('');
+  const [tradeStats, setTradeStats] = useState<any>(null);
+  const [trades, setTrades] = useState<any[]>([]);
 
   async function load() {
     try {
@@ -23,6 +25,15 @@ export default function TradingDashboard() {
     }
   }
 
+  async function loadHistory() {
+    try {
+      const [statsResponse,tradesResponse]=await Promise.all([fetch('/api/trades/stats',{cache:'no-store'}),fetch('/api/trades?limit=25',{cache:'no-store'})]);
+      if(statsResponse.status===401||tradesResponse.status===401){window.location.replace('/login');return;}
+      if(statsResponse.ok) setTradeStats(await statsResponse.json());
+      if(tradesResponse.ok) setTrades((await tradesResponse.json()).trades||[]);
+    } catch { /* retain the last history view during a temporary failure */ }
+  }
+
   useEffect(() => {
     fetch('/api/auth/session', { cache: 'no-store' })
       .then(async (res) => {
@@ -38,8 +49,10 @@ export default function TradingDashboard() {
       })
       .catch(() => setS((prev: any) => ({ ...prev, error: 'Unable to initialize secure session' })));
     load();
+    loadHistory();
     const timer = setInterval(load, 3000);
-    return () => clearInterval(timer);
+    const historyTimer = setInterval(loadHistory, 15000);
+    return () => { clearInterval(timer); clearInterval(historyTimer); };
   }, []);
 
   async function control(running: boolean) {
@@ -87,6 +100,9 @@ export default function TradingDashboard() {
 
   const running = s.running === true;
   const deltaOnline = s.connection?.state !== 'offline';
+  const money=(value:any)=>value==null?'—':Number(value).toFixed(4);
+  const coveredValue=(scope:any,valueField:string,completeField:string)=>scope?.totalTrades===0?'0.0000':scope?.[completeField]?money(scope[valueField]):'—';
+  const coverage=(scope:any,reportedField:string)=>`${scope?.[reportedField]??0} / ${scope?.totalTrades??0}`;
 
   function displayStatus(action?: string, reason?: string) {
     if (action === 'ENTRY' && reason === 'ALGO_POSITION_OPEN') return 'ENTRY · ALGO POSITION OPEN';
@@ -134,7 +150,7 @@ export default function TradingDashboard() {
     ['Available', s.available],
     ['Position Size', s.position?.size],
     ['Entry Price', s.position?.entryPrice],
-    ['Position Source', s.activeTrade?.source === 'exchange_existing' ? 'EXISTING DELTA POSITION' : s.activeTrade?.source === 'bot' ? 'BOT' : '—'],
+    ['Position Source', s.activeTrade?.source === 'exchange_existing' ? 'EXISTING DELTA POSITION' : s.activeTrade?.source === 'bot' ? 'BOT' : s.activeTrade?.source === 'unattributed' ? 'UNKNOWN / UNATTRIBUTED' : '—'],
     ['Synced Stop Loss', s.activeTrade?.sl ?? 'NOT SET'],
     ['Synced Take Profit', s.activeTrade?.tp ?? 'NOT SET'],
     ['Daily Loss Streak', s.lossStreak],
@@ -189,6 +205,26 @@ export default function TradingDashboard() {
           </div>
         ))}
       </section>
+
+      <div className="performanceGrid">
+        {([['ACCOUNT TOTAL',tradeStats?.account],['BOT PERFORMANCE',tradeStats?.bot],['MANUAL PERFORMANCE',tradeStats?.manual]] as const).map(([title,scope])=>(
+          <div className="panel performanceCard" key={title}>
+            <h2>{title}</h2>
+            <strong className="netValue">{title==='ACCOUNT TOTAL'?'ACCOUNT':title.split(' ')[0]} NET P/L: {coveredValue(scope,'netPnL','netPnLComplete')}</strong>
+            <div className="statRows">
+              <span>Trades <b>{scope?.totalTrades??0}</b></span>
+              <span>{scope?.grossPnLComplete||scope?.totalTrades===0?'Gross P/L':'Known Gross P/L'} <b>{scope?.grossPnLComplete||scope?.totalTrades===0?money(scope?.grossPnL):money(scope?.grossPnL)}</b></span><span>Gross P/L Coverage <b>{coverage(scope,'grossPnLReportedTrades')}</b></span>
+              <span>{scope?.brokerageComplete||scope?.totalTrades===0?'Brokerage Paid':'Known Brokerage'} <b>{scope?.brokerageComplete||scope?.totalTrades===0?money(scope?.brokerage):money(scope?.brokerage)}</b></span><span>Brokerage Coverage <b>{coverage(scope,'brokerageReportedTrades')}</b></span>
+              <span>{scope?.gstComplete||scope?.totalTrades===0?'GST Paid':'Known GST'} <b>{scope?.gstComplete||scope?.totalTrades===0?money(scope?.GST):money(scope?.GST)}</b></span><span>GST Coverage <b>{coverage(scope,'gstReportedTrades')}</b></span>
+              <span>Total Charges <b>{coveredValue(scope,'totalCharges','totalChargesComplete')}</b></span><span>Charges Coverage <b>{coverage(scope,'totalChargesReportedTrades')}</b></span>
+              <span>Net P/L Coverage <b>{coverage(scope,'fullyReconciledTrades')}</b></span>
+              {title!=='ACCOUNT TOTAL'&&<span>Gross Win Rate <b>{Number(scope?.winRate??0).toFixed(2)}%</b></span>}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <div className="panel tradeHistoryPanel"><h2>Persistent Trade History</h2><div className="tableScroll"><table><thead><tr><th>Symbol</th><th>Source</th><th>Side</th><th>Entry Time</th><th>Actual Entry</th><th>Exit Time</th><th>Actual Exit</th><th>Qty</th><th>SL</th><th>TP</th><th>Exit</th><th>Gross P/L</th><th>Actual Brokerage</th><th>Estimated Brokerage</th><th>Actual GST</th><th>Estimated GST</th><th>Actual Charges</th><th>Estimated Charges</th><th>Actual Net P/L</th><th>Estimated Net P/L</th><th>R (actual net)</th><th>Status</th></tr></thead><tbody>{trades.map(t=><tr key={t.tradeId}><td>{t.symbol}</td><td>{t.source==='bot'?'BOT':'MANUAL'}</td><td>{t.side}</td><td>{t.entryTime?new Date(t.entryTime).toLocaleString():'—'}</td><td>{money(t.actualEntryPrice)}</td><td>{t.exitTime?new Date(t.exitTime).toLocaleString():'—'}</td><td>{money(t.actualExitPrice)}</td><td>{money(t.quantity)}</td><td>{money(t.initialSL)}</td><td>{money(t.takeProfit)}</td><td>{t.exitReason}</td><td>{money(t.grossPnL)}</td><td>{money(t.brokerage)}</td><td>{money(t.estimatedBrokerage)}</td><td>{money(t.GST)}</td><td>{money(t.estimatedGST)}</td><td>{money(t.totalCharges)}</td><td>{money(t.estimatedTotalCharges)}</td><td>{money(t.netPnL)}</td><td>{money(t.estimatedNetPnL)}</td><td>{money(t.realizedR)}</td><td>{t.financialStatus}</td></tr>)}{!trades.length&&<tr><td colSpan={22}>No persisted completed trades yet.</td></tr>}</tbody></table></div></div>
 
 
       <div className="panel">

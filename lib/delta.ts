@@ -89,6 +89,41 @@ export async function getOpenOrders(productId: number) {
   return (await privateRequest('GET', '/v2/orders', { product_id: productId, state: 'open' })).result || [];
 }
 
+// Read-only reporting endpoints. They are intentionally separate from order
+// execution and capped at Delta's documented maximum page size.
+export function toDeltaMicroseconds(epochMilliseconds:number) {
+  return Math.trunc(epochMilliseconds * 1_000);
+}
+
+export async function getOrderHistory(productId: number, startTime?: number, after?:string) {
+  return await privateRequest('GET', '/v2/orders/history', {
+    product_ids: String(productId), start_time: startTime, page_size: 50, after
+  });
+}
+
+export async function getFills(productId: number, startTime?: number, after?:string) {
+  return await privateRequest('GET', '/v2/fills', {
+    product_ids: String(productId), start_time: startTime, page_size: 50, after
+  });
+}
+
+export async function boundedHistory(fetchPage:(after?:string)=>Promise<any>, maxPages=10) {
+  const result:any[]=[]; let after:string|undefined; const seen=new Set<string>();
+  for(let page=0;page<maxPages;page++) {
+    const response=await fetchPage(after);
+    const next=typeof response?.meta?.after==='string'&&response.meta.after?response.meta.after:undefined;
+    if((after&&next===after)||(next&&seen.has(next))) return {result,complete:false};
+    if(Array.isArray(response?.result)) result.push(...response.result);
+    if(!next) return {result,complete:true};
+    seen.add(next);
+    after=next;
+  }
+  return {result,complete:false};
+}
+
+export async function getOrderHistoryBounded(productId:number,startTime?:number,maxPages=10){return boundedHistory(after=>getOrderHistory(productId,startTime,after),maxPages);}
+export async function getFillsBounded(productId:number,startTime?:number,maxPages=10){return boundedHistory(after=>getFills(productId,startTime,after),maxPages);}
+
 export async function setLeverage(productId: number, leverage: number) {
   return privateRequest('POST', `/v2/products/${productId}/orders/leverage`, undefined, { leverage: String(leverage) });
 }

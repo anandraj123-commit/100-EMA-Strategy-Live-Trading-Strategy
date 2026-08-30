@@ -129,6 +129,32 @@ Examples:
 
 If XAUTUSD already has a non-zero Delta position before the worker starts, the worker adopts it as `activeTrade` with source `exchange_existing`. The dashboard shows `ACTIVE · EXISTING POSITION`, current size and entry price, and synchronizes the live exchange SL/TP every 5 seconds. While that position remains open, the normal one-position-at-a-time guard prevents any new algo entry. Closing the adopted position does not alter the bot's daily loss streak because the trade was not created by the bot.
 
+## Persistent trade history
+
+Completed XAUTUSD trades are stored server-side in MongoDB's `trades` collection and exposed only through authenticated `GET /api/trades` and `GET /api/trades/stats` routes. History supports `page`, `limit` (maximum 100), `source=bot|exchange_existing`, and a validated symbol filter. Statistics are aggregated in MongoDB as separate bot, manual, and account scopes.
+
+The collection creates these indexes: unique `tradeId`; compound `source + exitTime`; compound `symbol + exitTime`; `exitTime`; and `createdAt`. Bot identity uses the entry exchange order ID so its OPEN and CLOSED states update the same record. Exchange-existing identity requires attributable fill IDs. Writes use atomic upserts; timestamps are never used as the sole identity.
+
+Actual entry/exit prices use quantity-weighted Delta fills when attributable. For an adopted exchange-existing position, Delta's live position average is retained as the actual entry source and the exit still requires fills. `brokerage` is the sum of Delta fill `commission` values for attributed entry and exit fills. Delta's fill schema does not expose attributable GST, so actual `GST`, `totalCharges`, and actual `netPnL` remain null unless all actual charge components are known. The configured taker rate and `GST_PCT` populate only `estimatedBrokerage`, `estimatedGST`, `estimatedTotalCharges`, and `estimatedNetPnL`; the dashboard never labels them “paid.”
+
+MongoDB and reconciliation failures are recorded as worker trade-history events and do not reject signals, change sizing, or modify exchange execution. Ownership resolution has four reporting states: bot confirmed, manual confirmed, unknown, and lookup failed. A timeout/error is never evidence of manual ownership. An OPEN bot record is restored only when its `ema-` client order, entry fills, product, side, and uninterrupted Delta fill lifecycle connect it to the current position; direction or size alone is insufficient. Uncertain positions remain monitored and continue blocking a second XAUTUSD entry, but they enter neither bot nor manual performance and never affect the bot loss streak.
+
+On a zero-position startup/reconnect reporting pass, OPEN/RECONCILING bot records are checked against bounded, cursor-paginated Delta fills and order history (up to ten 50-record pages). A provable close updates the same trade record; otherwise it remains RECONCILING with a safe diagnostic. This closes the normal restart window after an asynchronous close write, without blocking order protection or changing trading behavior.
+
+Fill attribution is conservative. Bot exits require the exact owned quantity, confirmed entry fills, and exit-order evidence; a manual addition, oversized/cross-boundary fill, missing order, incomplete pagination, or mixed lifecycle makes actual financial attribution unavailable. Manual exits require an exact position-close transition within the last live observation window, without additions/reversals. Unknown values stay null. Reporting quantity is capped at the ownership snapshot, and a 7-contract fill is never charged as an actual 5-contract bot exit.
+
+Statistics return known sums together with coverage counts and completeness booleans for gross P/L, brokerage, GST, total charges, and net P/L. “Paid” and complete Net P/L labels require every trade in that scope to be reconciled; otherwise the dashboard shows known values and `reported / total` coverage. Win rate is consistently based on actual gross P/L, not a mixture of gross and net outcomes. Bot, manual, and account known sums remain additive; unknown ownership is excluded from those scopes.
+
+The worker does not import a manual trade that opened and closed entirely while it was offline. No claim of complete historical manual import is made. Actual and estimated brokerage/GST/charges/net P/L remain separate in storage and in the history table.
+
+`MAX_DAILY_CONSECUTIVE_LOSSES` counts only reliably established realized losses from confirmed bot-owned positions. Delta TP fills reset the streak and Delta SL fills increment it regardless of where the ticker moves afterward. An exactly attributable profitable manual close resets the consecutive-loss streak; an exactly attributable losing manual close increments it but remains labelled `MANUAL_CLOSE`, not SL. Breakeven or unprovable exits leave the streak unchanged. This control classification uses read-only Delta fills/orders and never depends on MongoDB trade-history persistence.
+
+MongoDB integration tests are opt-in and must use a disposable deployment; they create and drop a random database:
+
+```sh
+TRADE_TEST_MONGODB_URI='mongodb://dedicated-test-server' npm test
+```
+
 
 ## Stop Robot behavior
 
