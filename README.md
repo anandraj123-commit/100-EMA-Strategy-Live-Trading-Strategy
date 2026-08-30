@@ -48,6 +48,32 @@ npm run dev
 
 Open http://localhost:3000 and click Start Bot.
 
+## Secure dashboard setup
+
+The web dashboard and its APIs require an administrator session. The standalone trading worker remains independent and continues monitoring when users log out or sessions expire.
+
+Add these values to `.env.local` (never commit that file):
+
+```bash
+MONGODB_URI=mongodb://your-private-connection-string
+MONGODB_DB=trading_dashboard
+AUTH_SECRET=a-random-secret-with-at-least-32-characters
+```
+
+Generate `AUTH_SECRET` with a cryptographically secure password generator. Create the initial administrator once by passing temporary environment values directly to the command:
+
+```bash
+read -r "INITIAL_ADMIN_EMAIL?Admin email: "
+read -rs "INITIAL_ADMIN_PASSWORD?Admin password: "
+export INITIAL_ADMIN_EMAIL INITIAL_ADMIN_PASSWORD
+npm run create-admin
+unset INITIAL_ADMIN_EMAIL INITIAL_ADMIN_PASSWORD
+```
+
+The password prompt is hidden. The password must be at least 14 characters. The command stores only a bcrypt hash and refuses to overwrite an existing account. Do not add either `INITIAL_ADMIN_*` value to `.env.local`; in production, inject them using your platform's one-time secret facility. Rotate the Delta API credentials that were previously present in `.env.example`, because removing a secret from the current file does not remove it from Git history.
+
+Sessions expire after eight hours. Login throttling uses MongoDB counters with a 15-minute TTL, so it applies across multiple web instances. Deploy behind a trusted proxy that replaces (rather than appends arbitrary client input to) `X-Forwarded-For` so source-IP throttling is meaningful.
+
 ## Delta environments
 - Production REST: `https://api.india.delta.exchange`
 - Demo/Testnet REST: `https://cdn-ind.testnet.deltaex.org`
