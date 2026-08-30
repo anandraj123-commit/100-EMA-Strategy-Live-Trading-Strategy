@@ -1,0 +1,15 @@
+:root{background:#0c0a06;color:#e8dcc0;font-family:ui-monospace,SFMono-Regular,Menlo,monospace}*{box-sizing:border-box}body{margin:0}main{max-width:1100px;margin:auto;padding:28px}h1{color:#ffb000}h1 span,.sub,small{color:#a9987a}section{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin:20px 0}.card,.panel{border:1px solid #4a3a10;background:#151109;padding:16px}.card strong{display:block;font-size:20px;margin-top:8px}.buttons{display:flex;gap:10px;margin:18px 0}button{border:0;padding:13px 24px;font-weight:800;cursor:pointer;border-radius:5px;letter-spacing:.5px;transition:transform .08s ease,filter .15s ease,box-shadow .15s ease}button:hover:not(:disabled){filter:brightness(1.08)}button:active:not(:disabled){transform:translateY(1px)}button:disabled{cursor:not-allowed;opacity:.65}.startRobot{background:#ffb000;color:#1a1204}.stopRobot{background:#e00000;color:#fff;border:1px solid #ff5a5a;box-shadow:0 0 14px rgba(255,0,0,.28)}.stopRobot:hover:not(:disabled){background:#ff1515;box-shadow:0 0 18px rgba(255,0,0,.42)}.error{background:#2a0e0e;color:#ffb3b3;padding:14px;white-space:pre-wrap}.panel{margin-top:14px}.panel h2{font-size:12px;color:#8a5f00;text-transform:uppercase}pre{white-space:pre-wrap;overflow:auto}
+
+.decisionLog{list-style:none;margin:0;padding:0}.decisionLog li{border-top:1px solid #33280e;padding:14px 0}.decisionLog li:first-child{border-top:0}.logHead{display:flex;justify-content:space-between;gap:14px;align-items:center;margin-bottom:8px}.logHead>strong{color:#e8dcc0}.logHead span{font-weight:800}.logGrid{display:grid;gap:5px;color:#bdae91;font-size:13px}.ok{color:#62d26f}.bad{color:#ff6969}.wait{color:#ffb000}@media(max-width:650px){.logHead{align-items:flex-start;flex-direction:column}}
+.connectionBadge{display:inline-flex;align-items:center;gap:9px;margin:4px 0 14px;padding:8px 12px;border:1px solid;border-radius:999px;font-weight:900;font-size:12px;letter-spacing:.5px}.connectionBadge.online{color:#62d26f;border-color:#285d30;background:#0d1d10}.connectionBadge.offline{color:#ff6969;border-color:#7d2828;background:#251010}.connectionDot{width:10px;height:10px;border-radius:50%;display:inline-block;background:currentColor;box-shadow:0 0 0 0 currentColor;animation:connectionPulse 1.4s infinite}.connectionBadge.offline .connectionDot{animation-duration:.7s}@keyframes connectionPulse{0%{box-shadow:0 0 0 0 currentColor;opacity:1}70%{box-shadow:0 0 0 7px transparent;opacity:.75}100%{box-shadow:0 0 0 0 transparent;opacity:1}}
+
+
+/* Read-only environment values and bot trade history */
+.envGrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(220px,1fr));gap:10px;}
+.envItem{border:1px solid #2a2a2a;padding:10px;background:#111;}
+.envItem small{display:block;opacity:.65;margin-bottom:5px;}
+.envItem strong{display:block;word-break:break-word;font-size:13px;}
+.historyWrap{overflow-x:auto;}
+.historyTable{width:100%;min-width:1900px;border-collapse:collapse;font-size:12px;}
+.historyTable th,.historyTable td{padding:8px 10px;border-bottom:1px solid #2a2a2a;text-align:left;white-space:nowrap;}
+.historyTable th{opacity:.7;font-size:11px;}
