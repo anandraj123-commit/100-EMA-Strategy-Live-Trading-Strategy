@@ -10,6 +10,13 @@ export default function TradingDashboard() {
   async function load() {
     try {
       const res = await fetch('/api/status', { cache: 'no-store' });
+      if (res.status === 401) {
+        setS({});
+        setCsrfToken('');
+        window.location.replace('/login');
+        return;
+      }
+      if (!res.ok) throw new Error(`Status request failed: HTTP ${res.status}`);
       setS(await res.json());
     } catch {
       // Keep the last visible status if a refresh fails temporarily.
@@ -20,9 +27,12 @@ export default function TradingDashboard() {
     fetch('/api/auth/session', { cache: 'no-store' })
       .then(async (res) => {
         if (res.status === 401) {
-          window.location.assign('/login');
+          setS({});
+          setCsrfToken('');
+          window.location.replace('/login');
           return;
         }
+        if (!res.ok) throw new Error(`Session request failed: HTTP ${res.status}`);
         const data = await res.json();
         setCsrfToken(data.csrfToken || '');
       })

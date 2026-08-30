@@ -7,12 +7,17 @@ import { createSession, setSessionCookie } from '../../../../lib/auth/session';
 
 const DUMMY_HASH = '$2b$12$IYJgIU0FdFI7UIQSuSQgHOJSSoPuLfzTUpk.NXFoZmeJiCfa76wB2';
 
+function trustedRequestSource(req: NextRequest) {
+  if (process.env.TRUST_PROXY_IP_HEADERS !== 'true') return null;
+  return (req.headers.get('x-forwarded-for')?.split(',')[0] || req.headers.get('x-real-ip') || '').trim() || null;
+}
+
 export async function POST(req: NextRequest) {
   let body: unknown;
   try { body = await req.json(); } catch { return NextResponse.json({ error: 'Invalid credentials' }, { status: 401 }); }
   const email = typeof (body as { email?: unknown })?.email === 'string' ? (body as { email: string }).email.trim().toLowerCase() : '';
   const password = typeof (body as { password?: unknown })?.password === 'string' ? (body as { password: string }).password : '';
-  const source = (req.headers.get('x-forwarded-for')?.split(',')[0] || req.headers.get('x-real-ip') || 'unknown').trim();
+  const source = trustedRequestSource(req);
   const keys = loginRateLimitKeys(source, email || 'invalid');
   const rate = await recordLoginAttempt(keys);
   if (rate.limited) {

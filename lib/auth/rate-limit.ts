@@ -1,4 +1,6 @@
 import crypto from 'node:crypto';
+import type { Collection } from 'mongodb';
+import { MongoServerError } from 'mongodb';
 import { getDb } from '../db/mongodb';
 import { getAuthSecret } from './config';
 
@@ -9,34 +11,60 @@ function keyFor(kind: string, value: string) {
   return crypto.createHmac('sha256', getAuthSecret()).update(`${kind}:${value}`).digest('hex');
 }
 
-async function increment(key: string) {
-  const db = await getDb();
-  const attempts = db.collection<AttemptDocument>('login_attempts');
-  await attempts.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 });
-  const now = new Date();
-  const existing = await attempts.findOne({ key });
-  if (!existing || existing.expiresAt <= now) {
-    await attempts.updateOne({ key }, { $set: { attempts: 1, expiresAt: new Date(now.getTime() + WINDOW_MS) } }, { upsert: true });
-    return 1;
+export async function incrementLoginAttempt(attempts: Collection<AttemptDocument>, key: string, now = new Date()) {
+  const expiresAt = new Date(now.getTime() + WINDOW_MS);
+  const update = [{
+    $set: {
+      key,
+      attempts: {
+        $cond: [
+          { $gt: ['$expiresAt', now] },
+          { $add: [{ $ifNull: ['$attempts', 0] }, 1] },
+          1,
+        ],
+      },
+      expiresAt: { $cond: [{ $gt: ['$expiresAt', now] }, '$expiresAt', expiresAt] },
+    },
+  }];
+
+  try {
+    const updated = await attempts.findOneAndUpdate({ key }, update, { upsert: true, returnDocument: 'after' });
+    if (!updated) throw new Error('Unable to record login attempt');
+    return updated.attempts;
+  } catch (error) {
+    // A unique-key collision is possible only when simultaneous requests create
+    // the first counter. Retry as a normal atomic update against the winner.
+    if (!(error instanceof MongoServerError) || error.code !== 11000) throw error;
+    const updated = await attempts.findOneAndUpdate({ key }, update, { returnDocument: 'after' });
+    if (!updated) throw new Error('Unable to record login attempt');
+    return updated.attempts;
   }
-  await attempts.updateOne({ key }, { $inc: { attempts: 1 } });
-  return existing.attempts + 1;
 }
 
-export function loginRateLimitKeys(ip: string, email: string) {
+export function loginRateLimitKeys(source: string | null, email: string) {
   return {
-    pair: keyFor('pair', `${ip}:${email}`),
-    source: keyFor('source', ip),
+    pair: keyFor('pair', `${source || 'unverified'}:${email}`),
+    source: source ? keyFor('source', source) : null,
     account: keyFor('account', email),
   };
 }
 
 export async function recordLoginAttempt(keys: ReturnType<typeof loginRateLimitKeys>) {
-  const [pair, source, account] = await Promise.all([increment(keys.pair), increment(keys.source), increment(keys.account)]);
+  const db = await getDb();
+  const attempts = db.collection<AttemptDocument>('login_attempts');
+  await Promise.all([
+    attempts.createIndex({ key: 1 }, { unique: true }),
+    attempts.createIndex({ expiresAt: 1 }, { expireAfterSeconds: 0 }),
+  ]);
+  const [pair, source, account] = await Promise.all([
+    incrementLoginAttempt(attempts, keys.pair),
+    keys.source ? incrementLoginAttempt(attempts, keys.source) : Promise.resolve(0),
+    incrementLoginAttempt(attempts, keys.account),
+  ]);
   return { limited: pair > 5 || source > 30 || account > 10, retryAfterSeconds: Math.ceil(WINDOW_MS / 1000) };
 }
 
 export async function clearLoginAttempts(keys: ReturnType<typeof loginRateLimitKeys>) {
   const db = await getDb();
-  await db.collection<AttemptDocument>('login_attempts').deleteMany({ key: { $in: Object.values(keys) } });
+  await db.collection<AttemptDocument>('login_attempts').deleteMany({ key: { $in: Object.values(keys).filter((key): key is string => Boolean(key)) } });
 }

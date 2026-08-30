@@ -72,7 +72,13 @@ unset INITIAL_ADMIN_EMAIL INITIAL_ADMIN_PASSWORD
 
 The password prompt is hidden. The password must be at least 14 characters. The command stores only a bcrypt hash and refuses to overwrite an existing account. Do not add either `INITIAL_ADMIN_*` value to `.env.local`; in production, inject them using your platform's one-time secret facility. Rotate the Delta API credentials that were previously present in `.env.example`, because removing a secret from the current file does not remove it from Git history.
 
-Sessions expire after eight hours. Login throttling uses MongoDB counters with a 15-minute TTL, so it applies across multiple web instances. Deploy behind a trusted proxy that replaces (rather than appends arbitrary client input to) `X-Forwarded-For` so source-IP throttling is meaningful.
+Sessions expire after eight hours. Login throttling uses atomic MongoDB counters with a 15-minute TTL, so it applies across multiple web instances. Account throttling is always active. Source-IP and source-plus-account throttling are enabled only when `TRUST_PROXY_IP_HEADERS=true`. Set that option only behind a trusted hosting proxy that overwrites (rather than accepts or appends arbitrary client input to) `X-Forwarded-For`/`X-Real-IP`; leave it false when that guarantee is unavailable.
+
+The default test suite never connects to a production database. To run the opt-in authentication integration suite, provide `AUTH_TEST_MONGODB_URI` for a dedicated disposable MongoDB test deployment. The suite creates and drops a uniquely named database:
+
+```bash
+AUTH_TEST_MONGODB_URI='mongodb://dedicated-test-server' npm test
+```
 
 ## Delta environments
 - Production REST: `https://api.india.delta.exchange`
