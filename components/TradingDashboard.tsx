@@ -5,7 +5,8 @@ import { calculateCurrentPnL, paginateItems } from '../lib/dashboard';
 
 const tabs=['Environment Variables','Profit','History','Decision Log','Trade / Synchronisation Events','Pending Setup','Active Trade','Strategy / Guardrails','Latest Decision'] as const;
 
-export default function TradingDashboard() {
+export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
+  const portfolioQuery=`portfolioId=${encodeURIComponent(portfolioId)}`;
   const [s, setS] = useState<any>({});
   const [controlBusy, setControlBusy] = useState(false);
   const [csrfToken, setCsrfToken] = useState('');
@@ -25,7 +26,7 @@ export default function TradingDashboard() {
 
   async function load() {
     try {
-      const res = await fetch('/api/status', { cache: 'no-store' });
+      const res = await fetch(`/api/status?${portfolioQuery}`, { cache: 'no-store' });
       if (res.status === 401) {
         setS({});
         setCsrfToken('');
@@ -41,7 +42,7 @@ export default function TradingDashboard() {
 
   async function loadHistory(page=historyPage) {
     try {
-      const [statsResponse,tradesResponse]=await Promise.all([fetch('/api/trades/stats',{cache:'no-store'}),fetch(`/api/trades?page=${page}&limit=20`,{cache:'no-store'})]);
+      const [statsResponse,tradesResponse]=await Promise.all([fetch(`/api/trades/stats?${portfolioQuery}`,{cache:'no-store'}),fetch(`/api/trades?${portfolioQuery}&page=${page}&limit=20`,{cache:'no-store'})]);
       if(statsResponse.status===401||tradesResponse.status===401){window.location.replace('/login');return;}
       if(statsResponse.ok) setTradeStats(await statsResponse.json());
       if(tradesResponse.ok){const data=await tradesResponse.json();setTrades(data.trades||[]);setHistoryPagination({page:data.page,totalPages:data.totalPages||1,total:data.total||0});}
@@ -50,7 +51,7 @@ export default function TradingDashboard() {
 
   async function loadSettings(){
     setSettingsError('');
-    try{const response=await fetch('/api/settings',{cache:'no-store'});if(response.status===401||response.status===403){if(response.status===401)window.location.replace('/login');throw new Error('Administrator access is required');}if(!response.ok)throw new Error(`Settings request failed: HTTP ${response.status}`);const data=await response.json();setSettings(data.definitions||[]);setSettingValues(data.values||{});setSavedSettingValues(data.values||{});}catch(error:any){setSettingsError(error?.message||'Unable to load settings');}
+    try{const response=await fetch(`/api/settings?${portfolioQuery}`,{cache:'no-store'});if(response.status===401||response.status===403){if(response.status===401)window.location.replace('/login');throw new Error('Administrator access is required');}if(!response.ok)throw new Error(`Settings request failed: HTTP ${response.status}`);const data=await response.json();setSettings(data.definitions||[]);setSettingValues(data.values||{});setSavedSettingValues(data.values||{});}catch(error:any){setSettingsError(error?.message||'Unable to load settings');}
   }
 
   useEffect(() => {
@@ -77,7 +78,7 @@ export default function TradingDashboard() {
 
   async function saveSettings(){
     if(!settingsEditing||!csrfToken)return;setSettingsBusy(true);setSettingsError('');
-    try{const response=await fetch('/api/settings',{method:'PUT',headers:{'content-type':'application/json','x-csrf-token':csrfToken},body:JSON.stringify({values:settingValues})});const data=await response.json();if(!response.ok)throw new Error(data.error||`Save failed: HTTP ${response.status}`);setSettingValues(data.values);setSavedSettingValues(data.values);setSettingsEditing(false);}catch(error:any){setSettingsError(error?.message||'Unable to save settings');}finally{setSettingsBusy(false);}
+    try{const response=await fetch('/api/settings',{method:'PUT',headers:{'content-type':'application/json','x-csrf-token':csrfToken},body:JSON.stringify({portfolioId,values:settingValues})});const data=await response.json();if(!response.ok)throw new Error(data.error||`Save failed: HTTP ${response.status}`);setSettingValues(data.values);setSavedSettingValues(data.values);setSettingsEditing(false);}catch(error:any){setSettingsError(error?.message||'Unable to save settings');}finally{setSettingsBusy(false);}
   }
 
   async function control(running: boolean) {
@@ -89,7 +90,7 @@ export default function TradingDashboard() {
       const res = await fetch('/api/control', {
         method: 'POST',
         headers: { 'content-type': 'application/json', 'x-csrf-token': csrfToken },
-        body: JSON.stringify({ running })
+        body: JSON.stringify({ portfolioId, running })
       });
 
       if (!res.ok) {
@@ -190,7 +191,7 @@ export default function TradingDashboard() {
   return (
     <main>
       <div className="dashboardHead">
-        <h1>XAUTUSD <span>// DELTA LIVE ALGO</span></h1>
+        <h1>{s.symbol||'PORTFOLIO'} <span>// DELTA {s.environment==='demo'?'DEMO':'LIVE'} ALGO</span></h1>
         <button type="button" className="logout" onClick={logout} disabled={!csrfToken || controlBusy}>LOG OUT</button>
       </div>
 

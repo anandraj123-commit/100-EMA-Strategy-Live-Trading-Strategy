@@ -1,5 +1,5 @@
 import crypto from 'node:crypto';
-import { baseUrl, config, resolutionToSeconds } from './config';
+import { baseUrl, config, getDeltaEnvironment, resolutionToSeconds,type RuntimeEnvironment } from './config';
 
 const REQUEST_TIMEOUT_MS = 10_000;
 export type PortfolioEnvironment = 'real' | 'demo';
@@ -25,6 +25,7 @@ function sign(method: string, timestamp: string, path: string, query: string, bo
   const message = method + timestamp + path + query + body;
   return crypto.createHmac('sha256', config.apiSecret).update(message).digest('hex');
 }
+function signWithSecret(secret:string,method:string,timestamp:string,path:string,query:string,body:string){return crypto.createHmac('sha256',secret).update(method+timestamp+path+query+body).digest('hex');}
 
 function queryString(params?: Record<string, string | number | boolean | undefined>) {
   if (!params) return '';
@@ -83,6 +84,10 @@ export async function privateRequest(method: 'GET'|'POST'|'PUT'|'DELETE', path: 
   if (!res.ok || json?.success === false) throw new Error(`${json?.error?.code || json?.message || `HTTP ${res.status}`} ${json?.error?.context ? JSON.stringify(json.error.context) : ''}`.trim());
   return json;
 }
+
+async function privateEnvironmentRequest(environment:RuntimeEnvironment,method:'GET',path:string,params?:Record<string,string|number|boolean|undefined>){const resolved=getDeltaEnvironment(environment);if(!resolved.apiKey||!resolved.apiSecret)throw new Error('CREDENTIALS_NOT_CONFIGURED');const q=queryString(params),timestamp=String(Math.floor(Date.now()/1000)),signature=signWithSecret(resolved.apiSecret,method,timestamp,path,q,'');const res=await deltaFetch(resolved.baseUrl+path+q,{method,headers:{Accept:'application/json','api-key':resolved.apiKey,timestamp,signature,'User-Agent':'node-nextjs-portfolio-safety'},cache:'no-store'});const json=await res.json();if(!res.ok||json?.success===false)throw new Error(json?.error?.code||json?.message||`HTTP ${res.status}`);return json;}
+export async function getEnvironmentPosition(productId:number,environment:RuntimeEnvironment){return (await privateEnvironmentRequest(environment,'GET','/v2/positions',{product_id:productId})).result;}
+export async function getEnvironmentOpenOrders(productId:number,environment:RuntimeEnvironment){return (await privateEnvironmentRequest(environment,'GET','/v2/orders',{product_id:productId,state:'open'})).result||[];}
 
 export async function getProduct(symbol: string) {
   return (await publicGet(`/v2/products/${encodeURIComponent(symbol)}`)).result;

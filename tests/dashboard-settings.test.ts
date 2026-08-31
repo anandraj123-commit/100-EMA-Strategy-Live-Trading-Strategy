@@ -9,17 +9,17 @@ import { GET as getSettings, PUT as putSettings } from '../app/api/settings/rout
 
 test('runtime settings expose supported defaults without any secret names',()=>{
   const defaults=runtimeSettingDefaults(),keys=Object.keys(defaults),metadata=runtimeSettingMetadata();
-  assert.ok(keys.includes('SYMBOL'));assert.ok(keys.includes('EMA_LENGTH'));assert.ok(keys.includes('AUTO_TRADE'));
+  assert.equal(keys.includes('SYMBOL'),false);assert.equal(keys.includes('DELTA_ENV'),false);assert.ok(keys.includes('EMA_LENGTH'));assert.ok(keys.includes('AUTO_TRADE'));
   for(const forbidden of ['DELTA_API_KEY','DELTA_API_SECRET','MONGODB_URI','AUTH_SECRET','PASSWORD','SESSION_SECRET'])assert.equal(keys.includes(forbidden),false);
   assert.equal(metadata.every(item=>item.restartRequired===true),true);
 });
 
 test('safe setting validation preserves types and rejects invalid, unknown, and secret values',()=>{
-  assert.deepEqual(validateRuntimeSettings({AUTO_TRADE:true,EMA_LENGTH:100,RESOLUTION:'5m',SYMBOL:'XAUTUSD'}),{AUTO_TRADE:true,EMA_LENGTH:100,RESOLUTION:'5m',SYMBOL:'XAUTUSD'});
+  assert.deepEqual(validateRuntimeSettings({AUTO_TRADE:true,EMA_LENGTH:100,RESOLUTION:'5m'}),{AUTO_TRADE:true,EMA_LENGTH:100,RESOLUTION:'5m'});
   assert.throws(()=>validateRuntimeSettings({AUTO_TRADE:'true'}),/boolean/);
   assert.throws(()=>validateRuntimeSettings({EMA_LENGTH:Number.NaN}),/integer/);
   assert.throws(()=>validateRuntimeSettings({RESOLUTION:'weekly'}),/Unsupported/);
-  assert.throws(()=>validateRuntimeSettings({SYMBOL:'xaut/usd'}),/SYMBOL/);
+  assert.throws(()=>validateRuntimeSettings({SYMBOL:'XAUTUSD'}),/Unknown or protected/);
   assert.throws(()=>validateRuntimeSettings({UNKNOWN_SETTING:1}),/Unknown or protected/);
   assert.throws(()=>validateRuntimeSettings({DELTA_API_SECRET:'secret'}),/Unknown or protected/);
 });

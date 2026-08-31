@@ -10,6 +10,8 @@ export type ReconciliationStatus = 'OPEN' | 'CLOSED' | 'RECONCILING' | 'FAILED';
 export interface TradeDocument {
   _id?: ObjectId;
   tradeId: string;
+  portfolioId?: string;
+  environment?: 'real'|'demo';
   symbol: string;
   productId: number;
   side: TradeSide;

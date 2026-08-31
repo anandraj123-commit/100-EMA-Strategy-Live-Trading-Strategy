@@ -1,0 +1,6 @@
+import Link from 'next/link';
+import { listPortfolioByEnvironment } from '../lib/portfolio/repository';
+import { portfolioWithPrices } from '../lib/portfolio/service';
+import { readStatus } from '../lib/state';
+import type { PortfolioEnvironment } from '../lib/delta';
+export default async function TradeWorkspaceList({environment}:{environment:PortfolioEnvironment}){const rows=await portfolioWithPrices(await listPortfolioByEnvironment(environment));return rows.length?<div className="portfolioGrid">{rows.map(row=>{const status=readStatus(row.id);return <Link className="portfolioCard workspacePortfolioCard" href={`/futures/${environment==='real'?'live':'demo'}/${row.id}`} key={row.id}><span className="portfolioType">{environment.toUpperCase()}</span><h2>{row.symbol}</h2><dl><div><dt>Current Price</dt><dd>{row.currentPrice??'Unavailable'}</dd></div><div><dt>Robot Status</dt><dd>{status.running?'RUNNING':'STOPPED'}</dd></div><div><dt>Position Status</dt><dd>{Number((status.position as any)?.size||0)!==0?'OPEN':'FLAT'}</dd></div></dl></Link>;})}</div>:<section className="portfolioEmpty"><h2>No {environment.toUpperCase()} portfolios.</h2><p>Add an instrument from Portfolio first.</p><Link href="/futures/portfolio">Open Portfolio</Link></section>;}

@@ -41,7 +41,7 @@ The trade is rejected when estimated entry + estimated exit fees + GST exceed `M
 ## Setup
 ```bash
 cp .env.example .env.local
-# Put your own Delta demo API key/secret in .env.local
+# Configure separate Delta live and demo credentials in .env.local
 npm install
 npm run dev
 ```
@@ -85,6 +85,11 @@ AUTH_TEST_MONGODB_URI='mongodb://dedicated-test-server' npm test
 - Demo/Testnet REST: `https://cdn-ind.testnet.deltaex.org`
 
 Demo and live API keys are different. Trading API keys may require the server public IP to be whitelisted.
+
+Use `DELTA_LIVE_API_KEY` and `DELTA_LIVE_API_SECRET` for REAL portfolios, and
+`DELTA_DEMO_API_KEY` and `DELTA_DEMO_API_SECRET` for DEMO portfolios. There is
+no credential fallback between environments. Portfolio workers remain stopped
+from private trading activity when their environment credentials are absent.
 
 ## XAUTUSD price source
 For this strategy, use `PRICE_SOURCE=last` when you want breakout detection to match Delta's **Traded Price** chart. The dashboard also shows mark, last traded, and spot prices separately.

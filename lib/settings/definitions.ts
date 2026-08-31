@@ -20,8 +20,6 @@ const numberSetting = (key:string,label:string,defaultValue:number,min:number,ma
 const choiceSetting=(key:string,label:string,defaultValue:string,choices:string[]):SettingDefinition=>({key,label,type:'string',defaultValue,restartRequired:true,validate(value){if(typeof value!=='string'||!choices.includes(value))throw new Error(`${key} must be one of: ${choices.join(', ')}`);return value;}});
 
 export const runtimeSettingDefinitions:SettingDefinition[]=[
-  choiceSetting('DELTA_ENV','Delta environment',config.env,['demo','live']),
-  {key:'SYMBOL',label:'Symbol',type:'string',defaultValue:config.symbol,restartRequired:true,validate(value){if(typeof value!=='string'||!/^[A-Z0-9_-]{1,30}$/.test(value))throw new Error('SYMBOL must contain only uppercase letters, numbers, underscore, or hyphen');return value;}},
   {key:'RESOLUTION',label:'Resolution',type:'string',defaultValue:config.resolution,restartRequired:true,validate(value){if(typeof value!=='string')throw new Error('RESOLUTION must be a string');resolutionToSeconds(value);return value.toLowerCase();}},
   {key:'AUTO_TRADE',label:'Auto trade',type:'boolean',defaultValue:config.autoTrade,restartRequired:true,validate(value){if(typeof value!=='boolean')throw new Error('AUTO_TRADE must be boolean');return value;}},
   numberSetting('POLL_MS','Poll interval (ms)',config.pollMs,250,60_000,true),

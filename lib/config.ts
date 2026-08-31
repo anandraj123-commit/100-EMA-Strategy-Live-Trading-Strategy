@@ -74,6 +74,18 @@ export let baseUrl = config.env === 'live'
   ? 'https://api.india.delta.exchange'
   : 'https://cdn-ind.testnet.deltaex.org';
 
+export type RuntimeEnvironment='real'|'demo';
+export function getDeltaEnvironment(environment:RuntimeEnvironment){const live=environment==='real';return {environment,baseUrl:live?'https://api.india.delta.exchange':'https://cdn-ind.testnet.deltaex.org',apiKey:(live?process.env.DELTA_LIVE_API_KEY:process.env.DELTA_DEMO_API_KEY)?.trim()||'',apiSecret:(live?process.env.DELTA_LIVE_API_SECRET:process.env.DELTA_DEMO_API_SECRET)?.trim()||'',credentialLabels:live?['DELTA_LIVE_API_KEY','DELTA_LIVE_API_SECRET'] as const:['DELTA_DEMO_API_KEY','DELTA_DEMO_API_SECRET'] as const};}
+export function configurePortfolioRuntime(environment:RuntimeEnvironment,symbol:string){
+  const resolved=getDeltaEnvironment(environment),live=environment==='real';
+  config.env=live?'live':'demo';
+  config.symbol=symbol;
+  config.apiKey=resolved.apiKey;
+  config.apiSecret=resolved.apiSecret;
+  baseUrl=resolved.baseUrl;
+  return {environment,credentialsConfigured:Boolean(config.apiKey&&config.apiSecret),baseUrl};
+}
+
 export function applyRuntimeConfigOverrides(values:Record<string,string|number|boolean>){
   const mapping:Record<string,keyof typeof config>={DELTA_ENV:'env',SYMBOL:'symbol',RESOLUTION:'resolution',AUTO_TRADE:'autoTrade',POLL_MS:'pollMs',EMA_LENGTH:'emaLen',SLOPE_LOOKBACK:'slopeLookback',RR:'rr',RISK_PCT:'riskPct',RISK_BASE:'riskBase',MAX_DAILY_CONSECUTIVE_LOSSES:'maxDailyLosses',MIN_STOP_PCT:'minStopPct',MAX_EFFECTIVE_LEVERAGE:'maxEffectiveLeverage',MAX_FEE_RISK_PCT:'maxFeeRiskPct',GST_PCT:'gstPct',ORDER_LEVERAGE:'orderLeverage',PRICE_SOURCE:'priceSource'};
   for(const [key,value] of Object.entries(values)){const property=mapping[key];if(property)(config as Record<string,unknown>)[property]=value;}

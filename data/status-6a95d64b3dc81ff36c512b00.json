@@ -1,0 +1,27 @@
+{
+  "portfolioId": "6a95d64b3dc81ff36c512b00",
+  "environment": "real",
+  "credentialsConfigured": false,
+  "running": false,
+  "updatedAt": "2026-08-31T21:45:16.802Z",
+  "env": "live",
+  "symbol": "BTCUSD",
+  "autoTrade": false,
+  "connection": {
+    "state": "offline",
+    "lastOnlineAt": null,
+    "lastOfflineAt": "2026-08-31T21:33:04.740Z",
+    "error": "Credentials Not Configured",
+    "consecutiveFailures": 731
+  },
+  "error": "Credentials Not Configured",
+  "tradeEvents": [
+    {
+      "id": "1788211984741-l8tfgw",
+      "at": "2026-08-31T21:33:04.741Z",
+      "type": "CONNECTION_LOST",
+      "error": "Credentials Not Configured"
+    }
+  ],
+  "logs": []
+}
