@@ -2,14 +2,14 @@ import { config } from '../config';
 import { getFillsBounded, getOrderHistoryBounded, toDeltaMicroseconds } from '../delta';
 import type { TradeDocument, TradeExitReason, TradeSide, TradeSource } from '../../models/Trade';
 import { aggregateCommission, attributeTradeFills, deltaTimestampMilliseconds, financials, stableTradeId, weightedAverage, type DeltaFill } from './reconciliation';
-import { upsertTrade } from './repository';
+import { findClosedExitFillClaim, findManualEntryFillClaim, upsertTrade } from './repository';
 
 const id=(v:unknown)=>v==null?null:String(v);
 const date=(v:unknown)=>{const d=v?new Date(String(v)):null;return d&&!Number.isNaN(d.valueOf())?d:null;};
 const num=(v:unknown)=>{const n=Number(v);return v!==null&&v!==''&&Number.isFinite(n)?n:null;};
 const fillId=(f:DeltaFill)=>id(f.id);
-export interface TradePersistenceDependencies {upsert:typeof upsertTrade;fills:typeof getFillsBounded;orders:typeof getOrderHistoryBounded;now:()=>number;}
-const defaultDependencies:TradePersistenceDependencies={upsert:upsertTrade,fills:getFillsBounded,orders:getOrderHistoryBounded,now:()=>Date.now()};
+export interface TradePersistenceDependencies {upsert:typeof upsertTrade;fills:typeof getFillsBounded;orders:typeof getOrderHistoryBounded;now:()=>number;findEntryClaim?:typeof findManualEntryFillClaim;findExitClaim?:typeof findClosedExitFillClaim;}
+const defaultDependencies:TradePersistenceDependencies={upsert:upsertTrade,fills:getFillsBounded,orders:getOrderHistoryBounded,now:()=>Date.now(),findEntryClaim:findManualEntryFillClaim,findExitClaim:findClosedExitFillClaim};
 
 export interface ActiveTradeSnapshot {
   direction?:string; source?:TradeSource; entryPrice?:number; trigger?:number; sl?:number|null; tp?:number|null;
@@ -29,8 +29,10 @@ export async function persistOpenBotTrade(trade:ActiveTradeSnapshot, productId:n
 }
 
 export async function persistOpenManualTrade(trade:ActiveTradeSnapshot,productId:number,symbol:string,entryFills:DeltaFill[],dependencies:TradePersistenceDependencies=defaultDependencies){
+  if(trade.source!=='exchange_existing'||trade.attributionStatus!=='MANUAL_CONFIRMED')throw new Error('Manual OPEN persistence requires MANUAL_CONFIRMED ownership');
   const entryFillIds=entryFills.map(fillId).filter((v):v is string=>!!v);const tradeId=stableTradeId('exchange_existing',productId,null,entryFillIds,[]);
   if(!tradeId||!entryFillIds.length)throw new Error('Cannot persist manual ownership without stable Delta entry fill identifiers');
+  if(dependencies.findEntryClaim&&await dependencies.findEntryClaim(entryFillIds,tradeId))throw new Error('TRADE_HISTORY_ENTRY_FILL_ALREADY_CLAIMED');
   const side:TradeSide=trade.direction==='short'?'SHORT':'LONG',contracts=num(trade.ownedContracts??trade.contracts),cv=num(trade.contractValue),actualEntryPrice=weightedAverage(entryFills);
   if(actualEntryPrice==null)throw new Error('Cannot persist manual ownership without actual Delta entry prices');
   const entryTimeMs=Math.min(...entryFills.map(f=>deltaTimestampMilliseconds(f.created_at)??Infinity));const entryOrderIds=[...new Set(entryFills.map(f=>id(f.order_id)).filter((v):v is string=>!!v))];const entryOrderId=entryOrderIds.length===1?entryOrderIds[0]:null;const brokerage=aggregateCommission(entryFills);
@@ -63,6 +65,7 @@ export async function persistClosedTrade(trade:ActiveTradeSnapshot, productId:nu
   const resolvedId=stableTradeId(source,productId,entryOrderId,entryFillIds,exitFillIds);
   if(!resolvedId) throw new Error('No stable exchange identity available; refusing timestamp-only trade persistence');
   const tradeId=trade.tradeId??resolvedId;
+  if(dependencies.findExitClaim&&await dependencies.findExitClaim(exitFillIds,tradeId))throw new Error('TRADE_HISTORY_EXIT_FILL_ALREADY_CLAIMED');
   const contracts=num(trade.ownedContracts??trade.contracts), cv=num(trade.contractValue), quantity=contracts!=null&&cv!=null?contracts*cv:contracts;
   const actualEntry=weightedAverage(entryFills);
   const actualExit=weightedAverage(exitFills);
@@ -71,12 +74,12 @@ export async function persistClosedTrade(trade:ActiveTradeSnapshot, productId:nu
   const estimateEntry=entryForPnl??num(trade.entryPrice), estimateExit=actualExit??num(observedExitPrice);
   const rate=num(trade.takerRate); const estimatedBrokerage=rate!=null&&quantity!=null&&estimateEntry!=null&&estimateExit!=null?quantity*(estimateEntry+estimateExit)*rate:null;
   const gstPct=num(trade.gstPct??config.gstPct); const estimatedGST=estimatedBrokerage!=null&&gstPct!=null?estimatedBrokerage*gstPct/100:null;
-  const money=financials({side,entry:entryForPnl,exit:exitForPnl,quantity,entryFills,exitFills,estimatedBrokerage,estimatedGST});
+  const money=financials({side,entry:entryForPnl,exit:exitForPnl,quantity,entryFills,exitFills,estimatedBrokerage,estimatedGST,manualCommissionIncludesGST:source==='exchange_existing'});
   const exitOrderIds=[...new Set(exitFills.map(f=>id(f.order_id)).filter((v):v is string=>!!v))],exitOrders=exitOrderIds.map(orderId=>orders.find(o=>id(o.id)===orderId)),exitReasons=new Set(exitOrders.map(exitReason));
   const provenExitReason:TradeExitReason=exitOrders.every(Boolean)&&exitReasons.size===1?[...exitReasons][0]:'UNKNOWN';
   const exitOrderId=exitOrderIds.length===1?exitOrderIds[0]:null;const exitOrder=exitOrderId?orders.find(o=>id(o.id)===exitOrderId):null;
   const exitAt=exitFills.map(f=>date(f.created_at)).filter((v):v is Date=>!!v).sort((a,b)=>b.valueOf()-a.valueOf())[0]??new Date(dependencies.now());
-  const risk=num(trade.riskAmount); const realizedR=risk&&money.netPnL!=null?money.netPnL/risk:null;
+  const risk=num(trade.riskAmount); const realizedR=source==='bot'&&risk&&money.netPnL!=null?money.netPnL/risk:null;
   const doc:Omit<TradeDocument,'_id'|'createdAt'|'updatedAt'>={tradeId,symbol,productId,side,source,attributionStatus:source==='bot'?'BOT_CONFIRMED':'MANUAL_CONFIRMED',status:'CLOSED',entryTime:entryFills.map(f=>date(f.created_at)).filter((v):v is Date=>!!v).sort((a,b)=>a.valueOf()-b.valueOf())[0]??(trade.openedAt?new Date(trade.openedAt):null),intendedEntryPrice:num(trade.trigger??trade.entryPrice),actualEntryPrice:actualEntry,quantity,contracts,contractValue:cv,initialSL:num(trade.sl),takeProfit:num(trade.tp),exitTime:exitAt,intendedExitPrice:num(observedExitPrice),actualExitPrice:actualExit,exitReason:provenExitReason,...money,realizedR,entryOrderId,exitOrderId,entryClientOrderId:trade.clientOrderId??null,exitClientOrderId:id(exitOrder?.client_order_id),entryFillIds,exitFillIds,reconciledAt:new Date(dependencies.now()),feeDataSource:money.brokerage!=null?'delta_fills_commission':estimatedBrokerage!=null?'configured_rate_estimate':null,priceDataSource:actualEntry!=null&&actualExit!=null?'delta_weighted_fills':actualExit!=null?'partial_delta_fills':'unavailable',attributionNote:attribution.reason,reconciliationError:null};
   await dependencies.upsert(doc);
   return doc;

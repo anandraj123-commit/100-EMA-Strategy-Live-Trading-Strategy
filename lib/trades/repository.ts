@@ -28,7 +28,7 @@ export async function upsertTrade(trade: Omit<TradeDocument,'_id'|'createdAt'|'u
 
 export async function listTrades(options:{page:number;limit:number;source?:TradeSource;symbol?:string}) {
   const trades = await collection();
-  const filter:Filter<TradeDocument> = {status:'CLOSED'};
+  const filter:Filter<TradeDocument> = {};
   if (options.source) filter.source=options.source;
   if (options.symbol) filter.symbol=options.symbol;
   const [rows,total] = await Promise.all([
@@ -56,8 +56,12 @@ export async function findOpenBotTrade(productId:number) {
 }
 
 export async function findOpenManualTrade(productId:number){return (await collection()).findOne({productId,source:'exchange_existing',status:{$in:['OPEN','RECONCILING']}} as Filter<TradeDocument>,{sort:{createdAt:-1}});}
+export async function findOpenManualTrades(productId:number){return (await collection()).find({productId,source:'exchange_existing',status:{$in:['OPEN','RECONCILING']}} as Filter<TradeDocument>).sort({createdAt:1}).toArray();}
 
 export async function findUnresolvedBotTrades(productId:number){return (await collection()).find({productId,source:'bot',status:{$in:['OPEN','RECONCILING']}} as Filter<TradeDocument>).sort({createdAt:1}).toArray();}
 export async function findUnresolvedManualTrades(productId:number){return (await collection()).find({productId,source:'exchange_existing',status:{$in:['OPEN','RECONCILING']}} as Filter<TradeDocument>).sort({createdAt:1}).toArray();}
 
 export async function markTradeReconciling(tradeId:string,error:string){const now=new Date();await (await collection()).updateOne({tradeId},{$set:{status:'RECONCILING',attributionStatus:'UNKNOWN',reconciliationError:error,attributionNote:error,updatedAt:now}});}
+
+export async function findManualEntryFillClaim(entryFillIds:string[],excludeTradeId?:string){if(!entryFillIds.length)return null;return (await collection()).findOne({source:'exchange_existing',tradeId:{$ne:excludeTradeId},entryFillIds:{$in:entryFillIds}} as Filter<TradeDocument>);}
+export async function findClosedExitFillClaim(exitFillIds:string[],excludeTradeId?:string){if(!exitFillIds.length)return null;return (await collection()).findOne({status:'CLOSED',tradeId:{$ne:excludeTradeId},exitFillIds:{$in:exitFillIds}} as Filter<TradeDocument>);}

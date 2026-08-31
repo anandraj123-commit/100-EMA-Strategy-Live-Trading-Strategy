@@ -38,6 +38,7 @@ test('MongoDB authentication lifecycle and atomic rate limiting', { skip: !testM
     const sessionRoute = await import('../app/api/auth/session/route');
     const statusRoute = await import('../app/api/status/route');
     const controlRoute = await import('../app/api/control/route');
+    const settingsRoute = await import('../app/api/settings/route');
     const sessionModule = await import('../lib/auth/session');
     const rateLimitModule = await import('../lib/auth/rate-limit');
 
@@ -79,6 +80,18 @@ test('MongoDB authentication lifecycle and atomic rate limiting', { skip: !testM
     assert.equal((await controlRoute.POST(controlRequest())).status, 403);
     assert.equal((await controlRoute.POST(controlRequest('invalid'))).status, 403);
     assert.equal((await controlRoute.POST(controlRequest(csrfToken))).status, 200);
+
+    const settingsRead = await settingsRoute.GET(new NextRequest('http://localhost/api/settings', { headers: { cookie } }));
+    assert.equal(settingsRead.status, 200);
+    assert.equal((await settingsRead.json()).values.SYMBOL, process.env.SYMBOL || 'XAUTUSD');
+    const settingsWrite = (token?: string, values: any = { AUTO_TRADE:true, EMA_LENGTH:120 }) => settingsRoute.PUT(new NextRequest('http://localhost/api/settings', {
+      method:'PUT', headers:{ cookie, origin:'http://localhost', 'content-type':'application/json', ...(token ? { 'x-csrf-token':token } : {}) }, body:JSON.stringify({ values })
+    }));
+    assert.equal((await settingsWrite()).status, 403);
+    assert.equal((await settingsWrite(csrfToken, { DELTA_API_SECRET:'forbidden' })).status, 400);
+    assert.equal((await settingsWrite(csrfToken)).status, 200);
+    const settingsReload = await settingsRoute.GET(new NextRequest('http://localhost/api/settings', { headers:{ cookie } }));
+    assert.deepEqual((await settingsReload.json()).overrides, { AUTO_TRADE:true, EMA_LENGTH:120 });
 
     const viewerId = (await db.collection('users').insertOne({
       email: 'viewer@example.test', passwordHash: 'unused', role: 'viewer', createdAt: new Date(), updatedAt: new Date(),

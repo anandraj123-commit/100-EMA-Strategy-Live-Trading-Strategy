@@ -1,6 +1,9 @@
 'use client';
 
 import { useEffect, useState } from 'react';
+import { calculateCurrentPnL, paginateItems } from '../lib/dashboard';
+
+const tabs=['Environment Variables','Profit','History','Decision Log','Trade / Synchronisation Events','Pending Setup','Active Trade','Strategy / Guardrails','Latest Decision'] as const;
 
 export default function TradingDashboard() {
   const [s, setS] = useState<any>({});
@@ -8,6 +11,17 @@ export default function TradingDashboard() {
   const [csrfToken, setCsrfToken] = useState('');
   const [tradeStats, setTradeStats] = useState<any>(null);
   const [trades, setTrades] = useState<any[]>([]);
+  const [historyPage,setHistoryPage]=useState(1);
+  const [historyPagination,setHistoryPagination]=useState<any>({page:1,totalPages:1,total:0});
+  const [activeTab,setActiveTab]=useState<(typeof tabs)[number]>('Environment Variables');
+  const [logPage,setLogPage]=useState(1);
+  const [eventPage,setEventPage]=useState(1);
+  const [settings,setSettings]=useState<any[]>([]);
+  const [settingValues,setSettingValues]=useState<Record<string,string|number|boolean>>({});
+  const [savedSettingValues,setSavedSettingValues]=useState<Record<string,string|number|boolean>>({});
+  const [settingsEditing,setSettingsEditing]=useState(false);
+  const [settingsBusy,setSettingsBusy]=useState(false);
+  const [settingsError,setSettingsError]=useState('');
 
   async function load() {
     try {
@@ -25,13 +39,18 @@ export default function TradingDashboard() {
     }
   }
 
-  async function loadHistory() {
+  async function loadHistory(page=historyPage) {
     try {
-      const [statsResponse,tradesResponse]=await Promise.all([fetch('/api/trades/stats',{cache:'no-store'}),fetch('/api/trades?limit=25',{cache:'no-store'})]);
+      const [statsResponse,tradesResponse]=await Promise.all([fetch('/api/trades/stats',{cache:'no-store'}),fetch(`/api/trades?page=${page}&limit=20`,{cache:'no-store'})]);
       if(statsResponse.status===401||tradesResponse.status===401){window.location.replace('/login');return;}
       if(statsResponse.ok) setTradeStats(await statsResponse.json());
-      if(tradesResponse.ok) setTrades((await tradesResponse.json()).trades||[]);
+      if(tradesResponse.ok){const data=await tradesResponse.json();setTrades(data.trades||[]);setHistoryPagination({page:data.page,totalPages:data.totalPages||1,total:data.total||0});}
     } catch { /* retain the last history view during a temporary failure */ }
+  }
+
+  async function loadSettings(){
+    setSettingsError('');
+    try{const response=await fetch('/api/settings',{cache:'no-store'});if(response.status===401||response.status===403){if(response.status===401)window.location.replace('/login');throw new Error('Administrator access is required');}if(!response.ok)throw new Error(`Settings request failed: HTTP ${response.status}`);const data=await response.json();setSettings(data.definitions||[]);setSettingValues(data.values||{});setSavedSettingValues(data.values||{});}catch(error:any){setSettingsError(error?.message||'Unable to load settings');}
   }
 
   useEffect(() => {
@@ -49,11 +68,17 @@ export default function TradingDashboard() {
       })
       .catch(() => setS((prev: any) => ({ ...prev, error: 'Unable to initialize secure session' })));
     load();
-    loadHistory();
+    loadHistory(1);
+    loadSettings();
     const timer = setInterval(load, 3000);
     const historyTimer = setInterval(loadHistory, 15000);
     return () => { clearInterval(timer); clearInterval(historyTimer); };
   }, []);
+
+  async function saveSettings(){
+    if(!settingsEditing||!csrfToken)return;setSettingsBusy(true);setSettingsError('');
+    try{const response=await fetch('/api/settings',{method:'PUT',headers:{'content-type':'application/json','x-csrf-token':csrfToken},body:JSON.stringify({values:settingValues})});const data=await response.json();if(!response.ok)throw new Error(data.error||`Save failed: HTTP ${response.status}`);setSettingValues(data.values);setSavedSettingValues(data.values);setSettingsEditing(false);}catch(error:any){setSettingsError(error?.message||'Unable to save settings');}finally{setSettingsBusy(false);}
+  }
 
   async function control(running: boolean) {
     if (controlBusy || !csrfToken) return;
@@ -103,6 +128,9 @@ export default function TradingDashboard() {
   const money=(value:any)=>value==null?'—':Number(value).toFixed(4);
   const coveredValue=(scope:any,valueField:string,completeField:string)=>scope?.totalTrades===0?'0.0000':scope?.[completeField]?money(scope[valueField]):'—';
   const coverage=(scope:any,reportedField:string)=>`${scope?.[reportedField]??0} / ${scope?.totalTrades??0}`;
+  const currentPnL=calculateCurrentPnL({positionSize:s.position?.size,entryPrice:s.position?.entryPrice,currentPrice:s.price,contractValue:s.contractValue});
+  const pnlClass=currentPnL.value==null||currentPnL.value===0?'neutral':currentPnL.value>0?'profit':'loss';
+  const pagedLogs=paginateItems(s.logs||[],logPage,10),pagedEvents=paginateItems(s.tradeEvents||[],eventPage,10);
 
   function displayStatus(action?: string, reason?: string) {
     if (action === 'ENTRY' && reason === 'ALGO_POSITION_OPEN') return 'ENTRY · ALGO POSITION OPEN';
@@ -150,6 +178,8 @@ export default function TradingDashboard() {
     ['Available', s.available],
     ['Position Size', s.position?.size],
     ['Entry Price', s.position?.entryPrice],
+    ['Current P/L', currentPnL.value==null?'—':money(currentPnL.value),pnlClass],
+    ['Current P/L %', currentPnL.percentage==null?'—':`${Number(currentPnL.percentage).toFixed(2)}%`,pnlClass],
     ['Position Source', s.activeTrade?.source === 'exchange_existing' ? 'EXISTING DELTA POSITION' : s.activeTrade?.source === 'bot' ? 'BOT' : s.activeTrade?.source === 'unattributed' ? 'UNKNOWN / UNATTRIBUTED' : '—'],
     ['Synced Stop Loss', s.activeTrade?.sl ?? 'NOT SET'],
     ['Synced Take Profit', s.activeTrade?.tp ?? 'NOT SET'],
@@ -198,15 +228,21 @@ export default function TradingDashboard() {
       {s.error && <pre className="error">{s.error}</pre>}
 
       <section>
-        {cards.map(([label, value]) => (
+        {cards.map(([label, value, tone]) => (
           <div className="card" key={label}>
             <small>{label}</small>
-            <strong>{value ?? '—'}</strong>
+            <strong className={tone}>{value ?? '—'}</strong>
           </div>
         ))}
       </section>
 
-      <div className="performanceGrid">
+      <nav className="dashboardTabs" aria-label="Dashboard sections">
+        {tabs.map(tab=><button type="button" key={tab} className={activeTab===tab?'active':''} aria-selected={activeTab===tab} onClick={()=>setActiveTab(tab)}>{tab}</button>)}
+      </nav>
+
+      {activeTab==='Environment Variables'&&<div className="panel settingsPanel"><div className="panelHead"><div><h2>Environment Variables</h2><p>Safe settings only. Changes take effect after the worker is restarted.</p></div>{!settingsEditing?<button type="button" onClick={()=>setSettingsEditing(true)} disabled={!settings.length}>Enable Edit</button>:<div className="inlineButtons"><button type="button" onClick={saveSettings} disabled={settingsBusy}>{settingsBusy?'Saving…':'Save'}</button><button type="button" className="secondary" onClick={()=>{setSettingValues(savedSettingValues);setSettingsEditing(false);setSettingsError('');}} disabled={settingsBusy}>Cancel</button></div>}</div>{settingsError&&<p className="settingsError">{settingsError}</p>}<div className="settingsGrid">{settings.map((definition:any)=><label key={definition.key}><span>{definition.label}<small>{definition.key} · restart required</small></span>{definition.type==='boolean'?<select disabled={!settingsEditing} value={String(settingValues[definition.key])} onChange={event=>setSettingValues(values=>({...values,[definition.key]:event.target.value==='true'}))}><option value="true">true</option><option value="false">false</option></select>:<input disabled={!settingsEditing} type={definition.type==='number'?'number':'text'} value={String(settingValues[definition.key]??'')} onChange={event=>setSettingValues(values=>({...values,[definition.key]:definition.type==='number'?Number(event.target.value):event.target.value}))}/>}</label>)}</div>{!settings.length&&!settingsError&&<p>Loading settings…</p>}</div>}
+
+      {activeTab==='Profit'&&<div className="performanceGrid">
         {([['ACCOUNT TOTAL',tradeStats?.account],['BOT PERFORMANCE',tradeStats?.bot],['MANUAL PERFORMANCE',tradeStats?.manual]] as const).map(([title,scope])=>(
           <div className="panel performanceCard" key={title}>
             <h2>{title}</h2>
@@ -222,15 +258,15 @@ export default function TradingDashboard() {
             </div>
           </div>
         ))}
-      </div>
+      </div>}
 
-      <div className="panel tradeHistoryPanel"><h2>Persistent Trade History</h2><div className="tableScroll"><table><thead><tr><th>Symbol</th><th>Source</th><th>Side</th><th>Entry Time</th><th>Actual Entry</th><th>Exit Time</th><th>Actual Exit</th><th>Qty</th><th>SL</th><th>TP</th><th>Exit</th><th>Gross P/L</th><th>Actual Brokerage</th><th>Estimated Brokerage</th><th>Actual GST</th><th>Estimated GST</th><th>Actual Charges</th><th>Estimated Charges</th><th>Actual Net P/L</th><th>Estimated Net P/L</th><th>R (actual net)</th><th>Status</th></tr></thead><tbody>{trades.map(t=><tr key={t.tradeId}><td>{t.symbol}</td><td>{t.source==='bot'?'BOT':'MANUAL'}</td><td>{t.side}</td><td>{t.entryTime?new Date(t.entryTime).toLocaleString():'—'}</td><td>{money(t.actualEntryPrice)}</td><td>{t.exitTime?new Date(t.exitTime).toLocaleString():'—'}</td><td>{money(t.actualExitPrice)}</td><td>{money(t.quantity)}</td><td>{money(t.initialSL)}</td><td>{money(t.takeProfit)}</td><td>{t.exitReason}</td><td>{money(t.grossPnL)}</td><td>{money(t.brokerage)}</td><td>{money(t.estimatedBrokerage)}</td><td>{money(t.GST)}</td><td>{money(t.estimatedGST)}</td><td>{money(t.totalCharges)}</td><td>{money(t.estimatedTotalCharges)}</td><td>{money(t.netPnL)}</td><td>{money(t.estimatedNetPnL)}</td><td>{money(t.realizedR)}</td><td>{t.financialStatus}</td></tr>)}{!trades.length&&<tr><td colSpan={22}>No persisted completed trades yet.</td></tr>}</tbody></table></div></div>
+      {activeTab==='History'&&<div className="panel tradeHistoryPanel"><h2>Persistent Trade History</h2><div className="tableScroll"><table><thead><tr><th>Symbol</th><th>Source</th><th>Side</th><th>Entry Time</th><th>Actual Entry</th><th>Exit Time</th><th>Actual Exit</th><th>Qty</th><th>SL</th><th>TP</th><th>Exit</th><th>Gross P/L</th><th>Actual Brokerage</th><th>Estimated Brokerage</th><th>Actual GST</th><th>Estimated GST</th><th>Actual Charges</th><th>Estimated Charges</th><th>Actual Net P/L</th><th>Estimated Net P/L</th><th>R (actual net)</th><th>Status</th></tr></thead><tbody>{trades.map(t=><tr key={t.tradeId}><td>{t.symbol}</td><td>{t.source==='bot'?'BOT':'MANUAL'}</td><td>{t.side}</td><td>{t.entryTime?new Date(t.entryTime).toLocaleString():'—'}</td><td>{money(t.actualEntryPrice)}</td><td>{t.exitTime?new Date(t.exitTime).toLocaleString():'—'}</td><td>{money(t.actualExitPrice)}</td><td>{money(t.quantity)}</td><td>{money(t.initialSL)}</td><td>{money(t.takeProfit)}</td><td>{t.exitReason}</td><td>{money(t.grossPnL)}</td><td>{money(t.brokerage)}</td><td>{money(t.estimatedBrokerage)}</td><td>{money(t.GST)}</td><td>{money(t.estimatedGST)}</td><td>{money(t.totalCharges)}</td><td>{money(t.estimatedTotalCharges)}</td><td>{money(t.netPnL)}</td><td>{money(t.estimatedNetPnL)}</td><td>{money(t.realizedR)}</td><td>{t.financialStatus}</td></tr>)}{!trades.length&&<tr><td colSpan={22}>No persisted completed trades yet.</td></tr>}</tbody></table></div><Pagination pagination={historyPagination} onPage={page=>{setHistoryPage(page);loadHistory(page);}} /></div>}
 
 
-      <div className="panel">
+      {activeTab==='Decision Log'&&<div className="panel">
         <h2>{s.strategy?.resolution ? `${s.strategy.resolution} Decision Log` : 'Decision Log'}</h2>
         <ul className="decisionLog">
-          {(s.logs || []).map((log: any) => (
+          {pagedLogs.items.map((log: any) => (
             <li key={log.candleTime}>
               <div className="logHead">
                 <strong>{new Date(log.candleTime * 1000).toLocaleString()}</strong>
@@ -253,12 +289,13 @@ export default function TradingDashboard() {
           ))}
           {(!s.logs || s.logs.length === 0) && <li>No completed-candle log yet.</li>}
         </ul>
-      </div>
+        <Pagination pagination={pagedLogs.pagination} onPage={setLogPage}/>
+      </div>}
 
-      <div className="panel">
+      {activeTab==='Trade / Synchronisation Events'&&<div className="panel">
         <h2>Trade / Synchronisation Events</h2>
         <ul className="decisionLog">
-          {(s.tradeEvents || []).map((event: any) => (
+          {pagedEvents.items.map((event: any) => (
             <li key={event.id}>
               <div className="logHead">
                 <strong>{new Date(event.at).toLocaleString()}</strong>
@@ -275,32 +312,38 @@ export default function TradingDashboard() {
                 {event.tp != null && <span>TP: {event.tp}</span>}
                 {event.oldValue !== undefined && <span>Old: {event.oldValue ?? 'NOT SET'} → New: {event.newValue ?? 'NOT SET'}</span>}
                 {event.classifiedAs && <span>Close classification: {event.classifiedAs}</span>}
+                {event.reason && <span>Reason: {event.reason}</span>}
+                {event.error && <span>Error: {event.error}</span>}
+                {event.retry && <span>Retry: {event.retry}</span>}
               </div>
             </li>
           ))}
           {(!s.tradeEvents || s.tradeEvents.length === 0) && <li>No trade/synchronisation event yet.</li>}
         </ul>
-      </div>
+        <Pagination pagination={pagedEvents.pagination} onPage={setEventPage}/>
+      </div>}
 
-      <div className="panel">
+      {activeTab==='Pending Setup'&&<div className="panel">
         <h2>Pending Setup</h2>
-        <pre>{JSON.stringify(s.pending, null, 2)}</pre>
-      </div>
+        {s.pending?<pre>{JSON.stringify(s.pending,null,2)}</pre>:<p>No pending setup</p>}
+      </div>}
 
-      <div className="panel">
+      {activeTab==='Active Trade'&&<div className="panel">
         <h2>Active Trade</h2>
-        <pre>{JSON.stringify(s.activeTrade, null, 2)}</pre>
-      </div>
+        {s.activeTrade?<><div className="activePnl"><span>Current P/L <b className={pnlClass}>{money(currentPnL.value)}</b></span><span>Current P/L % <b className={pnlClass}>{currentPnL.percentage==null?'—':`${currentPnL.percentage.toFixed(2)}%`}</b></span></div><pre>{JSON.stringify(s.activeTrade,null,2)}</pre></>:<p>No active trade</p>}
+      </div>}
 
-      <div className="panel">
+      {activeTab==='Strategy / Guardrails'&&<div className="panel">
         <h2>Strategy / Guardrails</h2>
         <pre>{JSON.stringify(s.strategy, null, 2)}</pre>
-      </div>
+      </div>}
 
-      <div className="panel">
+      {activeTab==='Latest Decision'&&<div className="panel">
         <h2>Latest Decision</h2>
         <pre>{JSON.stringify(s.decision, null, 2)}</pre>
-      </div>
+      </div>}
     </main>
   );
 }
+
+function Pagination({pagination,onPage}:{pagination:any;onPage:(page:number)=>void}){return <div className="pagination"><button type="button" className="secondary" disabled={!pagination?.hasPrevious} onClick={()=>onPage(pagination.page-1)}>Previous</button><span>Page {pagination?.page??1} of {pagination?.totalPages??1} · {pagination?.total??0} items</span><button type="button" className="secondary" disabled={!pagination?.hasNext} onClick={()=>onPage(pagination.page+1)}>Next</button></div>}

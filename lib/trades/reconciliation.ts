@@ -1,8 +1,10 @@
 import crypto from 'node:crypto';
 import type { AttributionStatus, FinancialStatus, TradeSide } from '../../models/Trade';
 
-export interface DeltaFill { id?: string|number; order_id?: string|number; client_order_id?: string; product_id?: number; product_symbol?: string; side?: string; price?: string|number; size?: string|number; commission?: string|number; created_at?: string|number; }
+export interface DeltaFill { id?: string|number; order_id?: string|number; client_order_id?: string; product_id?: number; product_symbol?: string; side?: string; price?: string|number; size?: string|number; commission?: string|number; created_at?: string|number; fill_type?:string; meta_data?:Record<string,unknown>; }
 export interface DeltaOrder { id?:string|number; client_order_id?:string; product_id?:number; side?:string; reduce_only?:boolean; stop_order_type?:string; created_at?:string|number; }
+export interface OpenManualLifecycle {entryFills:DeltaFill[];entryOrderIds:string[];contracts:number;side:TradeSide;}
+export type OpenLifecycleReconstruction={complete:boolean;ambiguous:boolean;reason:string;segmentFills:DeltaFill[];manualLifecycles:OpenManualLifecycle[]};
 
 const id=(value:unknown)=>value==null?null:String(value);
 export function deltaTimestampMilliseconds(value:unknown):number|null {
@@ -22,6 +24,25 @@ export function deltaTimestampMilliseconds(value:unknown):number|null {
 const time=deltaTimestampMilliseconds;
 const signedSize=(fill:DeltaFill)=>Math.abs(Number(fill.size||0))*(String(fill.side).toLowerCase()==='buy'?1:-1);
 const nearly=(a:number,b:number)=>Math.abs(a-b)<1e-9;
+
+export function reconstructOpenManualLifecycles(input:{productId:number;currentSize:number;fills:DeltaFill[];orders:DeltaOrder[];historyComplete:boolean;knownBotOrderIds?:string[]}):OpenLifecycleReconstruction {
+  const unavailable=(reason:string,segmentFills:DeltaFill[]=[]):OpenLifecycleReconstruction=>({complete:false,ambiguous:true,reason,segmentFills,manualLifecycles:[]});
+  if(!input.historyComplete)return unavailable('Delta history pagination incomplete');
+  if(nearly(input.currentSize,0))return {complete:true,ambiguous:false,reason:'Account position is flat',segmentFills:[],manualLifecycles:[]};
+  const fills=input.fills.filter(f=>Number(f.product_id)===input.productId&&time(f.created_at)!=null).sort((a,b)=>(time(a.created_at)??0)-(time(b.created_at)??0));
+  let balance=input.currentSize,boundary=fills.length;
+  for(let index=fills.length-1;index>=0;index--){const previous=balance-signedSize(fills[index]);if(nearly(previous,0)){boundary=index;break;}balance=previous;}
+  if(boundary===fills.length)return unavailable('No proven zero-to-current lifecycle boundary');
+  const segmentFills=fills.slice(boundary),expectedSide=input.currentSize>0?'buy':'sell';let running=0;
+  for(let index=0;index<segmentFills.length;index++){const previous=running;running+=signedSize(segmentFills[index]);if(!nearly(previous,0)&&!nearly(running,0)&&Math.sign(previous)!==Math.sign(running))return unavailable('Lifecycle crosses zero inside a fill and cannot be split safely',segmentFills);if(nearly(running,0)&&index<segmentFills.length-1)return unavailable('A later fill exists after a proven flat boundary',segmentFills);}
+  if(!nearly(running,input.currentSize))return unavailable('Reconstructed lifecycle does not match current position',segmentFills);
+  const openingFills=segmentFills.filter(f=>String(f.side).toLowerCase()===expectedSide),reductions=segmentFills.filter(f=>String(f.side).toLowerCase()!==expectedSide);
+  const grouped=new Map<string,DeltaFill[]>();for(const fill of openingFills){const orderId=id(fill.order_id);if(!orderId)return unavailable('Opening fill has no stable order identity',segmentFills);grouped.set(orderId,[...(grouped.get(orderId)??[]),fill]);}
+  if(reductions.length&&grouped.size>1)return unavailable('Opposite-side reductions cannot be allocated across multiple opening lifecycles',segmentFills);
+  const orderById=new Map(input.orders.filter(o=>Number(o.product_id)===input.productId).map(o=>[id(o.id),o])),knownBots=new Set(input.knownBotOrderIds??[]),manualLifecycles:OpenManualLifecycle[]=[];
+  for(const [orderId,entryFills] of grouped){const order=orderById.get(orderId);if(!order)return unavailable('Every opening fill must map to a known Delta order',segmentFills);const clientId=id(order.client_order_id);if(knownBots.has(orderId)||(clientId?.startsWith('ema-')??false))continue;manualLifecycles.push({entryFills,entryOrderIds:[orderId],contracts:entryFills.reduce((total,fill)=>total+Math.abs(Number(fill.size||0)),0),side:input.currentSize>0?'LONG':'SHORT'});}
+  return {complete:true,ambiguous:false,reason:'Current uninterrupted lifecycle reconstructed from complete Delta evidence',segmentFills,manualLifecycles};
+}
 
 export type OwnershipResolution = {status:AttributionStatus;reason:string;botOwnedContracts:number;mixedPosition:boolean;staleBotClosed:boolean};
 export function resolvePositionOwnership(input:{lookupFailed:boolean;currentSize:number;productId:number;persisted?:{entryOrderId:string|null;entryClientOrderId:string|null;entryTime:Date|null;side:TradeSide;contracts:number|null}|null;fills:DeltaFill[];orders:DeltaOrder[];historyComplete:boolean}):OwnershipResolution {
@@ -58,7 +79,7 @@ export function resolvePositionOwnership(input:{lookupFailed:boolean;currentSize
   const openingOrders=openingFills.map(f=>orderById.get(id(f.order_id)));
   const mappedOpeningOrders=openingOrders.filter((order):order is DeltaOrder=>!!order);
   if(!openingFills.length||mappedOpeningOrders.length<openingFills.length) return unknown('UNKNOWN','Every opening fill must map to a known order');
-  if(mappedOpeningOrders.some(o=>typeof o.client_order_id!=='string'||!o.client_order_id||o.client_order_id.startsWith('ema-'))) return unknown('UNKNOWN','Lifecycle contains bot-generated or unverified opening orders');
+  if(mappedOpeningOrders.some(o=>typeof o.client_order_id==='string'&&o.client_order_id.startsWith('ema-'))) return unknown('UNKNOWN','Lifecycle contains bot-generated opening orders without persisted bot ownership');
   return {status:'MANUAL_CONFIRMED',reason:'Complete non-bot Delta lifecycle confirmed',botOwnedContracts:0,mixedPosition:false,staleBotClosed:false};
 }
 
@@ -161,12 +182,26 @@ export function stableTradeId(source:string, productId:number, entryOrderId:stri
   if (!identity) return null;
   return `${source}:${productId}:${crypto.createHash('sha256').update(identity).digest('hex').slice(0,32)}`;
 }
-export function financials(input:{side:TradeSide; entry:number|null; exit:number|null; quantity:number|null; entryFills:DeltaFill[]; exitFills:DeltaFill[]; estimatedBrokerage?:number|null; estimatedGST?:number|null}) {
+function attributableLiquidationFees(fills:DeltaFill[]):number|null {
+  let total=0;
+  for(const fill of fills){
+    const metadata=fill.meta_data;
+    const raw=metadata?.total_liquidation_fee_in_settling_asset??metadata?.liquidation_fee_in_settling_asset;
+    if(raw==null){if(fill.fill_type==='liquidation')return null;continue;}
+    const fee=finite(raw);if(fee==null)return null;total+=Math.abs(fee);
+  }
+  return total;
+}
+export function financials(input:{side:TradeSide; entry:number|null; exit:number|null; quantity:number|null; entryFills:DeltaFill[]; exitFills:DeltaFill[]; estimatedBrokerage?:number|null; estimatedGST?:number|null; manualCommissionIncludesGST?:boolean}) {
   const gross = grossPnL(input.side,input.entry,input.exit,input.quantity);
-  const brokerage = input.entryFills.length && input.exitFills.length ? aggregateCommission([...input.entryFills,...input.exitFills]) : null;
+  const actualFills=[...input.entryFills,...input.exitFills];
+  const brokerage = input.entryFills.length && input.exitFills.length ? aggregateCommission(actualFills) : null;
   const GST = null; // Delta fills document commission, but no attributable GST field.
-  const otherCharges = null;
-  const totalCharges = brokerage != null && GST != null && otherCharges != null ? brokerage+GST+otherCharges : null;
+  const liquidationFees=input.manualCommissionIncludesGST?attributableLiquidationFees(actualFills):null;
+  const otherCharges=input.manualCommissionIncludesGST&&liquidationFees!=null&&liquidationFees>0?liquidationFees:null;
+  const totalCharges = input.manualCommissionIncludesGST
+    ? brokerage!=null&&liquidationFees!=null?brokerage+liquidationFees:null
+    : brokerage != null && GST != null && otherCharges != null ? brokerage+GST+otherCharges : null;
   const netPnL = gross != null && totalCharges != null ? gross-totalCharges : null;
   const hasPrices = input.entry != null && input.exit != null && input.quantity != null;
   const financialStatus:FinancialStatus = hasPrices && totalCharges != null ? 'actual' : hasPrices ? 'partial' : (input.estimatedBrokerage != null || input.estimatedGST != null) ? 'estimated' : 'unavailable';

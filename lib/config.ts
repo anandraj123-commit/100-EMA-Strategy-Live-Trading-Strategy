@@ -70,6 +70,14 @@ export const config = {
   candleHistoryBars: Math.min(2000, Math.max(200, Number(process.env.EMA_LENGTH || 100) * 10 + Number(process.env.SLOPE_LOOKBACK || 3) + 10)),
 };
 
-export const baseUrl = config.env === 'live'
+export let baseUrl = config.env === 'live'
   ? 'https://api.india.delta.exchange'
   : 'https://cdn-ind.testnet.deltaex.org';
+
+export function applyRuntimeConfigOverrides(values:Record<string,string|number|boolean>){
+  const mapping:Record<string,keyof typeof config>={DELTA_ENV:'env',SYMBOL:'symbol',RESOLUTION:'resolution',AUTO_TRADE:'autoTrade',POLL_MS:'pollMs',EMA_LENGTH:'emaLen',SLOPE_LOOKBACK:'slopeLookback',RR:'rr',RISK_PCT:'riskPct',RISK_BASE:'riskBase',MAX_DAILY_CONSECUTIVE_LOSSES:'maxDailyLosses',MIN_STOP_PCT:'minStopPct',MAX_EFFECTIVE_LEVERAGE:'maxEffectiveLeverage',MAX_FEE_RISK_PCT:'maxFeeRiskPct',GST_PCT:'gstPct',ORDER_LEVERAGE:'orderLeverage',PRICE_SOURCE:'priceSource'};
+  for(const [key,value] of Object.entries(values)){const property=mapping[key];if(property)(config as Record<string,unknown>)[property]=value;}
+  config.resolutionSec=resolutionToSeconds(config.resolution);
+  config.candleHistoryBars=Math.min(2000,Math.max(200,config.emaLen*10+config.slopeLookback+10));
+  baseUrl=config.env==='live'?'https://api.india.delta.exchange':'https://cdn-ind.testnet.deltaex.org';
+}
