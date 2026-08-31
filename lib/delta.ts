@@ -2,6 +2,11 @@ import crypto from 'node:crypto';
 import { baseUrl, config, resolutionToSeconds } from './config';
 
 const REQUEST_TIMEOUT_MS = 10_000;
+export type PortfolioEnvironment = 'real' | 'demo';
+const PUBLIC_MARKET_URLS: Record<PortfolioEnvironment, string> = {
+  real: 'https://api.india.delta.exchange',
+  demo: 'https://cdn-ind.testnet.deltaex.org'
+};
 
 async function deltaFetch(url: string, init: RequestInit) {
   const controller = new AbortController();
@@ -35,6 +40,24 @@ export async function publicGet(path: string, params?: Record<string, string | n
   const json = await res.json();
   if (!res.ok || json?.success === false) throw new Error(json?.error?.code || json?.message || `HTTP ${res.status}`);
   return json;
+}
+
+async function publicMarketGet(environment: PortfolioEnvironment, path: string) {
+  const res = await deltaFetch(PUBLIC_MARKET_URLS[environment] + path, {
+    headers: { Accept: 'application/json', 'User-Agent': 'xautusd-nextjs-portfolio' },
+    cache: 'no-store'
+  });
+  const json = await res.json();
+  if (!res.ok || json?.success === false) throw new Error(json?.error?.code || json?.message || `HTTP ${res.status}`);
+  return json;
+}
+
+export async function getPublicProduct(symbol: string, environment: PortfolioEnvironment) {
+  return (await publicMarketGet(environment, `/v2/products/${encodeURIComponent(symbol)}`)).result;
+}
+
+export async function getPublicTicker(symbol: string, environment: PortfolioEnvironment) {
+  return (await publicMarketGet(environment, `/v2/tickers/${encodeURIComponent(symbol)}`)).result;
 }
 
 export async function privateRequest(method: 'GET'|'POST'|'PUT'|'DELETE', path: string, params?: Record<string, string | number | boolean | undefined>, bodyObj?: unknown) {
