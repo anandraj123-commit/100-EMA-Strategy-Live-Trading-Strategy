@@ -3,22 +3,24 @@
   "environment": "real",
   "credentialsConfigured": false,
   "running": false,
-  "updatedAt": "2026-08-31T21:45:16.799Z",
+  "updatedAt": "2026-09-01T23:51:40.356Z",
   "env": "live",
   "symbol": "XAUTUSD",
   "autoTrade": false,
+  "configuredAutoTrade": false,
+  "effectiveAutoTrade": false,
   "connection": {
     "state": "offline",
     "lastOnlineAt": null,
-    "lastOfflineAt": "2026-08-31T21:33:04.804Z",
+    "lastOfflineAt": "2026-09-01T23:51:39.307Z",
     "error": "Credentials Not Configured",
-    "consecutiveFailures": 731
+    "consecutiveFailures": 2
   },
   "error": "Credentials Not Configured",
   "tradeEvents": [
     {
-      "id": "1788211984805-pmfwxg",
-      "at": "2026-08-31T21:33:04.805Z",
+      "id": "1788306699307-qgq65n",
+      "at": "2026-09-01T23:51:39.307Z",
       "type": "CONNECTION_LOST",
       "error": "Credentials Not Configured"
     }
