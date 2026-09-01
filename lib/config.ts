@@ -41,6 +41,11 @@ const resolutionRaw = (process.env.RESOLUTION || '').trim();
 if (!resolutionRaw) throw new Error('RESOLUTION is required in .env.local (for example 1m, 5m, 15m, 1h).');
 const resolution = resolutionRaw.toLowerCase();
 const resolutionSec = resolutionToSeconds(resolution);
+const entryValidCandlesRaw = Number(process.env.ENTRY_VALID_CANDLES || 2);
+if (!Number.isFinite(entryValidCandlesRaw) || entryValidCandlesRaw < 1) {
+  throw new Error('ENTRY_VALID_CANDLES must be a number greater than or equal to 1.');
+}
+const entryValidCandles = Math.floor(entryValidCandlesRaw);
 
 export const config = {
   env: (process.env.DELTA_ENV || 'demo') as 'demo' | 'live',
@@ -51,6 +56,7 @@ export const config = {
   resolutionSec,
   emaLen: Number(process.env.EMA_LENGTH || 100),
   slopeLookback: Number(process.env.SLOPE_LOOKBACK || 3),
+  entryValidCandles,
   rr: Number(process.env.RR || 8),
   riskPct: Number(process.env.RISK_PCT || 1),
   maxDailyLosses: Number(process.env.MAX_DAILY_CONSECUTIVE_LOSSES || 10),
@@ -87,7 +93,7 @@ export function configurePortfolioRuntime(environment:RuntimeEnvironment,symbol:
 }
 
 export function applyRuntimeConfigOverrides(values:Record<string,string|number|boolean>){
-  const mapping:Record<string,keyof typeof config>={DELTA_ENV:'env',SYMBOL:'symbol',RESOLUTION:'resolution',AUTO_TRADE:'autoTrade',POLL_MS:'pollMs',EMA_LENGTH:'emaLen',SLOPE_LOOKBACK:'slopeLookback',RR:'rr',RISK_PCT:'riskPct',RISK_BASE:'riskBase',MAX_DAILY_CONSECUTIVE_LOSSES:'maxDailyLosses',MIN_STOP_PCT:'minStopPct',MAX_EFFECTIVE_LEVERAGE:'maxEffectiveLeverage',MAX_FEE_RISK_PCT:'maxFeeRiskPct',GST_PCT:'gstPct',ORDER_LEVERAGE:'orderLeverage',PRICE_SOURCE:'priceSource'};
+  const mapping:Record<string,keyof typeof config>={RESOLUTION:'resolution',AUTO_TRADE:'autoTrade',POLL_MS:'pollMs',EMA_LENGTH:'emaLen',SLOPE_LOOKBACK:'slopeLookback',ENTRY_VALID_CANDLES:'entryValidCandles',RR:'rr',RISK_PCT:'riskPct',RISK_BASE:'riskBase',MAX_DAILY_CONSECUTIVE_LOSSES:'maxDailyLosses',MIN_STOP_PCT:'minStopPct',MAX_EFFECTIVE_LEVERAGE:'maxEffectiveLeverage',MAX_FEE_RISK_PCT:'maxFeeRiskPct',GST_PCT:'gstPct',ORDER_LEVERAGE:'orderLeverage',PRICE_SOURCE:'priceSource'};
   for(const [key,value] of Object.entries(values)){const property=mapping[key];if(property)(config as Record<string,unknown>)[property]=value;}
   config.resolutionSec=resolutionToSeconds(config.resolution);
   config.candleHistoryBars=Math.min(2000,Math.max(200,config.emaLen*10+config.slopeLookback+10));

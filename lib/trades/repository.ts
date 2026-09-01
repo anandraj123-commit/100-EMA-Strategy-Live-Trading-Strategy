@@ -70,6 +70,7 @@ export async function hasActivePortfolioTrades(portfolioId:string){return Boolea
 export async function findLegacyUnresolvedTrades(productId:number){return (await collection()).find({productId,portfolioId:{$exists:false},status:{$in:['OPEN','RECONCILING']}} as Filter<TradeDocument>).sort({createdAt:1}).toArray();}
 
 export async function markTradeReconciling(tradeId:string,error:string){const now=new Date();await (await collection()).updateOne({tradeId},{$set:{status:'RECONCILING',attributionStatus:'UNKNOWN',reconciliationError:error,attributionNote:error,updatedAt:now}});}
+export async function updateTradeProtectionState(tradeId:string,protectionState:NonNullable<TradeDocument['protectionState']>){const now=new Date();await (await collection()).updateOne({tradeId,source:'bot',status:{$in:['OPEN','RECONCILING']}},{$set:{protectionState,protectionUpdatedAt:now,updatedAt:now}});}
 
 export async function findManualEntryFillClaim(entryFillIds:string[],excludeTradeId?:string,portfolioId?:string){if(!entryFillIds.length)return null;return (await collection()).findOne({...(portfolioId?{portfolioId}:{}),source:'exchange_existing',tradeId:{$ne:excludeTradeId},entryFillIds:{$in:entryFillIds}} as Filter<TradeDocument>);}
 export async function findClosedExitFillClaim(exitFillIds:string[],excludeTradeId?:string,portfolioId?:string){if(!exitFillIds.length)return null;return (await collection()).findOne({...(portfolioId?{portfolioId}:{}),status:'CLOSED',tradeId:{$ne:excludeTradeId},exitFillIds:{$in:exitFillIds}} as Filter<TradeDocument>);}

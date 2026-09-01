@@ -9,7 +9,8 @@
     "check-env": "tsx check-env.ts",
     "create-admin": "tsx scripts/create-admin.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/*.test.ts"
+    "test": "tsx --test tests/*.test.ts",
+    "secret:scan": "node --import tsx scripts/scan-secrets.ts"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",

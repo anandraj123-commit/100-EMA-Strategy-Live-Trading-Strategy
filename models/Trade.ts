@@ -6,12 +6,17 @@ export type TradeSide = 'LONG' | 'SHORT';
 export type TradeExitReason = 'SL' | 'TP' | 'MANUAL_CLOSE' | 'OTHER' | 'UNKNOWN';
 export type FinancialStatus = 'actual' | 'partial' | 'estimated' | 'unavailable';
 export type ReconciliationStatus = 'OPEN' | 'CLOSED' | 'RECONCILING' | 'FAILED';
+export type ProtectionState = 'PENDING'|'ACTIVE'|'REPAIR_REQUIRED';
 
 export interface TradeDocument {
   _id?: ObjectId;
   tradeId: string;
   portfolioId?: string;
   environment?: 'real'|'demo';
+  strategyConfig?: {resolution:string;emaLength:number;slopeLookback:number;entryValidCandles:number;rr:number;riskPct:number;riskBase:string;orderLeverage:number;maxEffectiveLeverage:number;priceSource:string;configRevision:string};
+  entryIntentId?:string|null;
+  protectionState?:ProtectionState|null;
+  protectionUpdatedAt?:Date|null;
   symbol: string;
   productId: number;
   side: TradeSide;

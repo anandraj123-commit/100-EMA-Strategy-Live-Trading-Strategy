@@ -1,0 +1,34 @@
+import assert from 'node:assert/strict';
+import fs from 'node:fs';
+import path from 'node:path';
+import test from 'node:test';
+import { entryClientOrderId,entryIntentId,type EntrySetupIdentity } from '../lib/entry-intents/identity';
+import { reconcileEntryIntent,reconcilePortfolioEntryIntents,submitPreparedEntryIntent,type EntryIntentDependencies } from '../lib/entry-intents/service';
+
+const setup=(overrides:Partial<EntrySetupIdentity>={}):EntrySetupIdentity=>({portfolioId:'portfolio-a',environment:'demo',productId:27,side:'buy',signalCandleTime:1_700_000_000,configRevision:'revision-a',...overrides});
+const prepared=(overrides:any={})=>{const identity=setup(overrides);return {intentId:entryIntentId(identity),clientOrderId:entryClientOrderId(identity),...identity,symbol:'BTCUSD',direction:identity.side==='buy'?'long':'short',contracts:2,trigger:100,sl:90,tp:180,contractValue:1,riskAmount:10,takerRate:0.0005,gstPct:18,strategyConfig:{configRevision:identity.configRevision}} as any;};
+
+function memoryDependencies(){
+  const records=new Map<string,any>();let submissions=0;
+  const dependencies:EntryIntentDependencies={
+    prepare:async intent=>{if(!records.has(intent.intentId))records.set(intent.intentId,{...intent,state:'PREPARED',createdAt:new Date(),updatedAt:new Date()});return records.get(intent.intentId)},
+    claim:async id=>{const row=records.get(id);if(row?.state!=='PREPARED')return null;row.state='SUBMITTING';return {...row}},
+    ambiguous:async id=>{records.get(id).state='AMBIGUOUS'},
+    confirmed:async(id,evidence)=>{Object.assign(records.get(id),{state:'CONFIRMED',...evidence});return records.get(id)},
+    touch:async id=>{records.get(id).state='AMBIGUOUS'},
+    unresolved:async portfolioId=>[...records.values()].filter(row=>row.portfolioId===portfolioId&&['SUBMITTING','AMBIGUOUS'].includes(row.state)),
+    lookup:async()=>{throw new Error('not found')}
+  };
+  return {dependencies,records,submit:async(clientOrderId:string)=>{submissions++;return {result:{id:'delta-1',client_order_id:clientOrderId,product_id:27,average_fill_price:'101'}}},submissionCount:()=>submissions};
+}
+
+test('same logical setup has stable intent and Delta client identities',()=>{assert.equal(entryIntentId(setup()),entryIntentId(setup()));assert.equal(entryClientOrderId(setup()),entryClientOrderId(setup()));assert.equal(entryClientOrderId(setup()).length,32);});
+test('different setup, Portfolio, environment, product, side, candle, or revision changes identity',()=>{const base=entryIntentId(setup());for(const changed of [setup({portfolioId:'portfolio-b'}),setup({environment:'real'}),setup({productId:99}),setup({side:'sell'}),setup({signalCandleTime:2}),setup({configRevision:'revision-b'})])assert.notEqual(entryIntentId(changed),base);});
+test('successful submission confirms the durable intent with returned Delta identity',async()=>{const h=memoryDependencies(),result=await submitPreparedEntryIntent(prepared(),h.submit,h.dependencies);assert.equal(result.status,'CONFIRMED');assert.equal(h.records.get(prepared().intentId).deltaOrderId,'delta-1');assert.equal(h.submissionCount(),1);});
+test('timeout after transmission becomes AMBIGUOUS and cannot immediately retry',async()=>{const h=memoryDependencies(),intent=prepared();const first=await submitPreparedEntryIntent(intent,async()=>{throw new Error('DELTA_NETWORK_TIMEOUT')},h.dependencies),second=await submitPreparedEntryIntent(intent,h.submit,h.dependencies);assert.equal(first.status,'AMBIGUOUS');assert.equal(second.status,'BLOCKED');assert.equal(h.submissionCount(),0);assert.equal(h.records.get(intent.intentId).state,'AMBIGUOUS');});
+test('concurrent cycles share one intent and only one obtains submission ownership',async()=>{const h=memoryDependencies(),intent=prepared();const [a,b]=await Promise.all([submitPreparedEntryIntent(intent,h.submit,h.dependencies),submitPreparedEntryIntent(intent,h.submit,h.dependencies)]);assert.deepEqual([a.status,b.status].sort(),['BLOCKED','CONFIRMED']);assert.equal(h.records.size,1);assert.equal(h.submissionCount(),1);});
+test('restart sees the same ambiguous identity and reconciles before submission',async()=>{const h=memoryDependencies(),intent=prepared();await submitPreparedEntryIntent(intent,async()=>{throw new Error('connection reset')},h.dependencies);const before=h.submissionCount();const restarted=await reconcilePortfolioEntryIntents(intent.portfolioId,h.dependencies);assert.equal(restarted.unresolved,1);assert.equal(h.submissionCount(),before);assert.equal([...h.records.values()][0].clientOrderId,intent.clientOrderId);});
+test('direct client-order lookup confirms matching order without a new market order',async()=>{const h=memoryDependencies(),intent=prepared();await submitPreparedEntryIntent(intent,async()=>{throw new Error('invalid response')},h.dependencies);h.dependencies.lookup=async clientOrderId=>({id:'recovered-order',client_order_id:clientOrderId,product_id:intent.productId,average_fill_price:'102',fill_ids:['fill-1']});const found=await reconcileEntryIntent(h.records.get(intent.intentId),h.dependencies);assert.ok(found);assert.equal(found.state,'CONFIRMED');assert.equal(found.deltaOrderId,'recovered-order');assert.deepEqual(found.deltaFillIds,['fill-1']);assert.equal(h.submissionCount(),0);});
+test('temporary empty lookup and zero-position-equivalent evidence remain ambiguous',async()=>{const h=memoryDependencies(),intent=prepared();await submitPreparedEntryIntent(intent,async()=>{throw new Error('timeout')},h.dependencies);h.dependencies.lookup=async()=>null;assert.equal(await reconcileEntryIntent(h.records.get(intent.intentId),h.dependencies),null);assert.equal(h.records.get(intent.intentId).state,'AMBIGUOUS');});
+test('ambiguous intent is Portfolio-scoped and survives Robot, AUTO_TRADE, and config changes',async()=>{const h=memoryDependencies(),intent=prepared();await submitPreparedEntryIntent(intent,async()=>{throw new Error('timeout')},h.dependencies);assert.equal((await h.dependencies.unresolved('portfolio-a')).length,1);assert.equal((await h.dependencies.unresolved('portfolio-b')).length,0);for(const _change of ['ROBOT_STOP','AUTO_TRADE_OFF','CONFIG_CHANGE'])assert.equal(h.records.get(intent.intentId).state,'AMBIGUOUS');});
+test('worker persists intent before placeMarketOrder and exposes ambiguous status without changing order type',()=>{const source=fs.readFileSync(path.join(process.cwd(),'worker.ts'),'utf8'),prepare=source.indexOf('submitPreparedEntryIntent(intent'),order=source.indexOf('placeMarketOrder(Number(product.id)',prepare);assert.ok(prepare>=0&&order>prepare);assert.match(source,/AMBIGUOUS_ENTRY_RECONCILIATION/);const delta=fs.readFileSync(path.join(process.cwd(),'lib/delta.ts'),'utf8');assert.match(delta,/order_type: 'market_order'/);assert.match(delta,/\/v2\/orders\/client_order_id\//);});

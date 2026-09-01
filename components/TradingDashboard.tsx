@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { calculateCurrentPnL, paginateItems } from '../lib/dashboard';
+import { autoTradeStatus, calculateCurrentPnL, effectiveAutoTrade, paginateItems } from '../lib/dashboard';
 
 const tabs=['Environment Variables','Profit','History','Decision Log','Trade / Synchronisation Events','Pending Setup','Active Trade','Strategy / Guardrails','Latest Decision'] as const;
 
@@ -99,7 +99,7 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
 
       // Update immediately so the correct button appears without waiting
       // for the next 3-second status refresh.
-      setS((prev: any) => ({ ...prev, running }));
+      setS((prev: any) => ({ ...prev, running, effectiveAutoTrade:effectiveAutoTrade(running,prev.configuredAutoTrade) }));
       await load();
     } catch (error: any) {
       setS((prev: any) => ({
@@ -126,6 +126,7 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
 
   const running = s.running === true;
   const deltaOnline = s.connection?.state !== 'offline';
+  const autoTrade = autoTradeStatus(s.effectiveAutoTrade);
   const money=(value:any)=>value==null?'—':Number(value).toFixed(4);
   const coveredValue=(scope:any,valueField:string,completeField:string)=>scope?.totalTrades===0?'0.0000':scope?.[completeField]?money(scope[valueField]):'—';
   const coverage=(scope:any,reportedField:string)=>`${scope?.[reportedField]??0} / ${scope?.totalTrades??0}`;
@@ -165,7 +166,6 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
     ['Delta Monitoring', deltaOnline ? 'CONNECTED / ACTIVE' : 'RECONNECTING…'],
     ['New Algo Entries', running ? 'ENABLED' : 'DISABLED'],
     ['Environment', s.env],
-    ['Auto Trade', String(s.autoTrade)],
     ['Symbol', s.symbol],
     ['Resolution', s.strategy?.resolution],
     ['Strategy Price', s.price],
@@ -202,6 +202,10 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
       <div className={`connectionBadge ${deltaOnline ? 'online' : 'offline'}`}>
         <span className="connectionDot" />
         {deltaOnline ? 'DELTA ONLINE' : 'DELTA OFFLINE · RECONNECTING'}
+      </div>
+
+      <div className={`autoTradeBadge ${autoTrade.tone}`}>
+        {autoTrade.label}
       </div>
 
       <div className="buttons">
@@ -241,7 +245,7 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
         {tabs.map(tab=><button type="button" key={tab} className={activeTab===tab?'active':''} aria-selected={activeTab===tab} onClick={()=>setActiveTab(tab)}>{tab}</button>)}
       </nav>
 
-      {activeTab==='Environment Variables'&&<div className="panel settingsPanel"><div className="panelHead"><div><h2>Environment Variables</h2><p>Safe settings only. Changes take effect after the worker is restarted.</p></div>{!settingsEditing?<button type="button" onClick={()=>setSettingsEditing(true)} disabled={!settings.length}>Enable Edit</button>:<div className="inlineButtons"><button type="button" onClick={saveSettings} disabled={settingsBusy}>{settingsBusy?'Saving…':'Save'}</button><button type="button" className="secondary" onClick={()=>{setSettingValues(savedSettingValues);setSettingsEditing(false);setSettingsError('');}} disabled={settingsBusy}>Cancel</button></div>}</div>{settingsError&&<p className="settingsError">{settingsError}</p>}<div className="settingsGrid">{settings.map((definition:any)=><label key={definition.key}><span>{definition.label}<small>{definition.key} · restart required</small></span>{definition.type==='boolean'?<select disabled={!settingsEditing} value={String(settingValues[definition.key])} onChange={event=>setSettingValues(values=>({...values,[definition.key]:event.target.value==='true'}))}><option value="true">true</option><option value="false">false</option></select>:<input disabled={!settingsEditing} type={definition.type==='number'?'number':'text'} value={String(settingValues[definition.key]??'')} onChange={event=>setSettingValues(values=>({...values,[definition.key]:definition.type==='number'?Number(event.target.value):event.target.value}))}/>}</label>)}</div>{!settings.length&&!settingsError&&<p>Loading settings…</p>}</div>}
+      {activeTab==='Environment Variables'&&<div className="panel settingsPanel"><div className="panelHead"><div><h2>Environment Variables</h2><p>Safe Portfolio settings apply live. Relevant changes cancel pending setups and rebuild strategy state.</p></div>{!settingsEditing?<button type="button" onClick={()=>setSettingsEditing(true)} disabled={!settings.length}>Enable Edit</button>:<div className="inlineButtons"><button type="button" onClick={saveSettings} disabled={settingsBusy}>{settingsBusy?'Saving…':'Save'}</button><button type="button" className="secondary" onClick={()=>{setSettingValues(savedSettingValues);setSettingsEditing(false);setSettingsError('');}} disabled={settingsBusy}>Cancel</button></div>}</div>{settingsError&&<p className="settingsError">{settingsError}</p>}<div className="settingsGrid">{settings.map((definition:any)=><label key={definition.key}><span>{definition.label}<small>{definition.key} · {definition.restartRequired?'restart required':'applies live'}</small></span>{definition.type==='boolean'?<select disabled={!settingsEditing} value={String(settingValues[definition.key])} onChange={event=>setSettingValues(values=>({...values,[definition.key]:event.target.value==='true'}))}><option value="true">true</option><option value="false">false</option></select>:<input disabled={!settingsEditing} type={definition.type==='number'?'number':'text'} value={String(settingValues[definition.key]??'')} onChange={event=>setSettingValues(values=>({...values,[definition.key]:definition.type==='number'?Number(event.target.value):event.target.value}))}/>}</label>)}</div>{!settings.length&&!settingsError&&<p>Loading settings…</p>}</div>}
 
       {activeTab==='Profit'&&<div className="performanceGrid">
         {([['ACCOUNT TOTAL',tradeStats?.account],['BOT PERFORMANCE',tradeStats?.bot],['MANUAL PERFORMANCE',tradeStats?.manual]] as const).map(([title,scope])=>(

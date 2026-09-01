@@ -117,6 +117,8 @@ export async function getOpenOrders(productId: number) {
   return (await privateRequest('GET', '/v2/orders', { product_id: productId, state: 'open' })).result || [];
 }
 
+export async function getOrderByClientOrderId(clientOrderId:string){return (await privateRequest('GET',`/v2/orders/client_order_id/${encodeURIComponent(clientOrderId)}`)).result;}
+
 // Read-only reporting endpoints. They are intentionally separate from order
 // execution and capped at Delta's documented maximum page size.
 export function toDeltaMicroseconds(epochMilliseconds:number) {
@@ -177,3 +179,5 @@ export async function placeBracket(productId: number, sl: number, tp: number, tr
     bracket_stop_trigger_method: triggerMethod
   });
 }
+
+export async function placeProtectiveStopOrder(productId:number,side:'buy'|'sell',size:number,kind:'stop_loss_order'|'take_profit_order',stopPrice:number,triggerMethod:'mark_price'|'last_traded_price'|'spot_price',clientOrderId:string){return privateRequest('POST','/v2/orders',undefined,{product_id:productId,size,side,order_type:'market_order',stop_order_type:kind,stop_price:String(stopPrice),stop_trigger_method:triggerMethod,reduce_only:true,client_order_id:clientOrderId,cancel_orders_accepted:false});}

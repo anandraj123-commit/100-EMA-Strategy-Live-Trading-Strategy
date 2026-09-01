@@ -11,3 +11,13 @@ export function paginateItems<T>(items:T[],page:number,limit:number){
   const safeLimit=Math.max(1,Math.min(100,Math.trunc(limit)||1)),total=items.length,totalPages=Math.max(1,Math.ceil(total/safeLimit)),safePage=Math.max(1,Math.min(totalPages,Math.trunc(page)||1));
   return {items:items.slice((safePage-1)*safeLimit,safePage*safeLimit),pagination:{page:safePage,limit:safeLimit,total,totalPages,hasNext:safePage<totalPages,hasPrevious:safePage>1}};
 }
+
+export function autoTradeStatus(autoTrade:unknown){
+  return autoTrade===true
+    ? {label:'AUTO TRADE ON',tone:'on' as const}
+    : {label:'AUTO TRADE OFF',tone:'off' as const};
+}
+
+export function effectiveAutoTrade(robotRunning:unknown,configuredAutoTrade:unknown){
+  return robotRunning===true&&configuredAutoTrade===true;
+}

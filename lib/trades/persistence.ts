@@ -20,13 +20,17 @@ export interface ActiveTradeSnapshot {
   tradeId?:string|null;
   closedAtBoundary?:number|null;
   entryFillIds?:string[];
+  strategyConfig?:TradeDocument['strategyConfig'];
+  entryIntentId?:string|null;
+  protectionState?:TradeDocument['protectionState'];
+  actualEntryPrice?:number|null;
 }
 
 export async function persistOpenBotTrade(trade:ActiveTradeSnapshot, productId:number, symbol:string,dependencies:TradePersistenceDependencies=defaultDependencies,context?:TradeRuntimeContext) {
   const entryOrderId=id(trade.orderId); const baseTradeId=stableTradeId('bot',productId,entryOrderId,[],[]);const tradeId=baseTradeId&&context?`${context.environment}:${context.portfolioId}:${baseTradeId}`:baseTradeId;
   if(!tradeId) throw new Error('Cannot persist bot ownership without an exchange order identifier');
   const side:TradeSide=trade.direction==='short'?'SHORT':'LONG'; const contracts=num(trade.ownedContracts??trade.contracts); const cv=num(trade.contractValue);
-  await dependencies.upsert({tradeId,...context,symbol,productId,side,source:'bot',attributionStatus:'BOT_CONFIRMED',status:'OPEN',entryTime:trade.openedAt?new Date(trade.openedAt):null,intendedEntryPrice:num(trade.trigger??trade.entryPrice),actualEntryPrice:null,quantity:contracts!=null&&cv!=null?contracts*cv:null,contracts,contractValue:cv,initialSL:num(trade.sl),takeProfit:num(trade.tp),exitTime:null,intendedExitPrice:null,actualExitPrice:null,exitReason:'UNKNOWN',grossPnL:null,brokerage:null,GST:null,otherCharges:null,totalCharges:null,netPnL:null,estimatedBrokerage:null,estimatedGST:null,estimatedTotalCharges:null,estimatedNetPnL:null,realizedR:null,entryOrderId,exitOrderId:null,entryClientOrderId:trade.clientOrderId??null,exitClientOrderId:null,entryFillIds:[],exitFillIds:[],financialStatus:'unavailable',feeDataSource:null,priceDataSource:null,attributionNote:null,reconciliationError:null,reconciledAt:null});
+  return dependencies.upsert({tradeId,...context,symbol,productId,side,source:'bot',...(trade.strategyConfig?{strategyConfig:trade.strategyConfig}:{}),entryIntentId:trade.entryIntentId??null,protectionState:trade.protectionState??'PENDING',protectionUpdatedAt:new Date(dependencies.now()),attributionStatus:'BOT_CONFIRMED',status:'OPEN',entryTime:trade.openedAt?new Date(trade.openedAt):null,intendedEntryPrice:num(trade.trigger??trade.entryPrice),actualEntryPrice:num(trade.actualEntryPrice),quantity:contracts!=null&&cv!=null?contracts*cv:null,contracts,contractValue:cv,initialSL:num(trade.sl),takeProfit:num(trade.tp),exitTime:null,intendedExitPrice:null,actualExitPrice:null,exitReason:'UNKNOWN',grossPnL:null,brokerage:null,GST:null,otherCharges:null,totalCharges:null,netPnL:null,estimatedBrokerage:null,estimatedGST:null,estimatedTotalCharges:null,estimatedNetPnL:null,realizedR:null,entryOrderId,exitOrderId:null,entryClientOrderId:trade.clientOrderId??null,exitClientOrderId:null,entryFillIds:trade.entryFillIds??[],exitFillIds:[],financialStatus:'unavailable',feeDataSource:null,priceDataSource:null,attributionNote:null,reconciliationError:null,reconciledAt:null});
 }
 
 export async function persistOpenManualTrade(trade:ActiveTradeSnapshot,productId:number,symbol:string,entryFills:DeltaFill[],dependencies:TradePersistenceDependencies=defaultDependencies,context?:TradeRuntimeContext){

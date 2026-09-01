@@ -55,9 +55,9 @@ The web dashboard and its APIs require an administrator session. The standalone 
 Add these values to `.env.local` (never commit that file):
 
 ```bash
-MONGODB_URI=mongodb://your-private-connection-string
+MONGODB_URI=your_mongodb_connection_string
 MONGODB_DB=trading_dashboard
-AUTH_SECRET=a-random-secret-with-at-least-32-characters
+AUTH_SECRET=generate_a_secure_random_secret
 ```
 
 Generate `AUTH_SECRET` with a cryptographically secure password generator. Create the initial administrator once by passing temporary environment values directly to the command:
@@ -77,7 +77,7 @@ Sessions expire after eight hours. Login throttling uses atomic MongoDB counters
 The default test suite never connects to a production database. To run the opt-in authentication integration suite, provide `AUTH_TEST_MONGODB_URI` for a dedicated disposable MongoDB test deployment. The suite creates and drops a uniquely named database:
 
 ```bash
-AUTH_TEST_MONGODB_URI='mongodb://dedicated-test-server' npm test
+AUTH_TEST_MONGODB_URI=your_disposable_test_mongodb_connection_string
 ```
 
 ## Delta environments
@@ -157,7 +157,7 @@ The worker does not import a manual trade that opened and closed entirely while 
 MongoDB integration tests are opt-in and must use a disposable deployment; they create and drop a random database:
 
 ```sh
-TRADE_TEST_MONGODB_URI='mongodb://dedicated-test-server' npm test
+TRADE_TEST_MONGODB_URI=your_disposable_test_mongodb_connection_string
 ```
 
 
