@@ -5,3 +5,5 @@ node_modules/
 .next/
 *.tsbuildinfo
 data/status.json
+data/supervisor-health.json
+data/supervisor-health.json.*.tmp

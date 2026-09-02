@@ -17,6 +17,8 @@ export interface TradeDocument {
   entryIntentId?:string|null;
   protectionState?:ProtectionState|null;
   protectionUpdatedAt?:Date|null;
+  protectionSlOrderId?:string|null;
+  protectionTpOrderId?:string|null;
   symbol: string;
   productId: number;
   side: TradeSide;

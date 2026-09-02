@@ -27,6 +27,8 @@ export async function finalPreOrderSafetyCheck(input:FinalPreOrderInput,deps:Fin
   if(Number((await deps.position())?.size||0)!==0)return blocked('FINAL_PREORDER_POSITION_NONZERO');
   const available=await deps.availableMargin();
   if(!Number.isFinite(available)||available<=0)return blocked('FINAL_PREORDER_MARGIN_INVALID');
+  if(!Number.isFinite(input.product.contractValue)||input.product.contractValue<=0||!Number.isFinite(input.product.tickSize)||input.product.tickSize<=0)return {...blocked('FINAL_PREORDER_RISK_GUARD'),guard:'INVALID_PRODUCT_METADATA'};
+  if(!Number.isFinite(input.setup.trigger)||input.setup.trigger<=0||!Number.isFinite(input.setup.sl)||input.setup.sl<=0)return {...blocked('FINAL_PREORDER_RISK_GUARD'),guard:'INVALID_ENTRY_PRICES'};
   const stopDistance=Math.abs(input.setup.trigger-input.setup.sl),stopPct=stopDistance/input.setup.trigger*100,riskAmount=available*currentConfig.riskPct/100;
   const contracts=Math.floor((stopDistance>0?riskAmount/stopDistance:0)/input.product.contractValue);
   const notional=contracts*input.product.contractValue*input.setup.trigger,effectiveLeverage=notional/available;
@@ -34,7 +36,7 @@ export async function finalPreOrderSafetyCheck(input:FinalPreOrderInput,deps:Fin
   const sl=roundToTick(input.setup.sl,input.product.tickSize),exitNotional=contracts*input.product.contractValue*tp;
   const feeBeforeGST=(notional+exitNotional)*input.product.takerRate,estimatedFees=feeBeforeGST*(1+currentConfig.gstPct/100),feeRiskPct=riskAmount>0?estimatedFees/riskAmount*100:Infinity;
   let guard:string|null=null;
-  if(contracts<1)guard='SIZE_BELOW_ONE_CONTRACT';else if(stopPct<currentConfig.minStopPct)guard='STOP_TOO_TIGHT';else if(effectiveLeverage>currentConfig.maxEffectiveLeverage)guard='LEVERAGE_TOO_HIGH';else if(feeRiskPct>currentConfig.maxFeeRiskPct)guard='FEES_TOO_HIGH';else if(input.expectedContracts!==undefined&&contracts!==input.expectedContracts)guard='FINAL_QUANTITY_CHANGED';
+  if(![riskAmount,stopDistance,stopPct,contracts,notional,effectiveLeverage,tp,sl,exitNotional,feeBeforeGST,estimatedFees,feeRiskPct].every(Number.isFinite))guard='INVALID_CALCULATION';else if(contracts<1)guard='SIZE_BELOW_ONE_CONTRACT';else if(input.setup.direction==='long'&&!(sl<input.setup.trigger&&tp>input.setup.trigger))guard='INVALID_PROTECTION_DIRECTION';else if(input.setup.direction==='short'&&!(sl>input.setup.trigger&&tp<input.setup.trigger))guard='INVALID_PROTECTION_DIRECTION';else if(stopPct<currentConfig.minStopPct)guard='STOP_TOO_TIGHT';else if(effectiveLeverage>currentConfig.maxEffectiveLeverage)guard='LEVERAGE_TOO_HIGH';else if(feeRiskPct>currentConfig.maxFeeRiskPct)guard='FEES_TOO_HIGH';else if(input.expectedContracts!==undefined&&contracts!==input.expectedContracts)guard='FINAL_QUANTITY_CHANGED';
   if(guard)return {...blocked('FINAL_PREORDER_RISK_GUARD'),guard};
   return {ok:true as const,available,riskAmount,contracts,stopDistance,stopPct,notional,effectiveLeverage,tp,sl,feeBeforeGST,estimatedFees,feeRiskPct,takerRate:input.product.takerRate};
 }

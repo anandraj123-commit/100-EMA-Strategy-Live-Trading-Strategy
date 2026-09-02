@@ -114,7 +114,7 @@ test('AUTO_TRADE hot reload accepts persisted boolean transitions and retains th
 test('worker refreshes portfolio runtime settings before each cycle without restarting or changing open-trade state',()=>{
   const source=fs.readFileSync(path.join(process.cwd(),'worker.ts'),'utf8');
   assert.match(source,/async function refreshRuntimeSettings\(\)[\s\S]*?getRuntimeSettingOverrides\(portfolioId\)[\s\S]*?changedRuntimeSettings/);
-  assert.match(source,/while \(true\) \{\s*try \{\s*await refreshRuntimeSettings\(\)/);
+  assert.match(source,/while \(!shuttingDown\) \{\s*try \{\s*await refreshRuntimeSettings\(\)/);
   const refreshBody=source.match(/async function refreshRuntimeSettings\(\)\{([\s\S]*?)\n\}/)?.[1]||'';
   assert.equal(refreshBody.includes('activeTrade='),false);
   for(const protectedAction of ['placeMarketOrder','placeBracket','writeControl'])assert.equal(refreshBody.includes(protectedAction),false);

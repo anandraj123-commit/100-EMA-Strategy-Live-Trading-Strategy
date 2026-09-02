@@ -2,10 +2,13 @@
   "name": "xautusd-delta-nextjs-bot",
   "version": "1.0.0",
   "private": true,
+  "engines": {
+    "node": ">=20.0.0 <23"
+  },
   "scripts": {
     "dev": "concurrently \"next dev\" \"tsx worker.ts\"",
     "build": "next build",
-    "start": "concurrently \"next start\" \"tsx worker.ts\"",
+    "start": "concurrently --kill-others-on-fail --names web,runtime \"next start\" \"tsx worker.ts\"",
     "check-env": "tsx check-env.ts",
     "create-admin": "tsx scripts/create-admin.ts",
     "typecheck": "tsc --noEmit",

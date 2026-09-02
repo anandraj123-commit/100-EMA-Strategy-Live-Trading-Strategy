@@ -34,7 +34,7 @@ test('protection repair remains driven by restored activeTrade prices, not curre
   const start=worker.indexOf('async function syncExchangeBracket');
   const end=worker.indexOf('const sleep=',start);
   const repair=worker.slice(start,end);
-  assert.match(repair,/intendedSl=Number\(activeTrade\.sl\)/);
-  assert.match(repair,/intendedTp=Number\(activeTrade\.tp\)/);
+  assert.match(repair,/intendedSl=numeric\(activeTrade\.sl\)/);
+  assert.match(repair,/intendedTp=numeric\(activeTrade\.tp\)/);
   assert.doesNotMatch(repair,/config\.rr|config\.riskPct|evaluateSetup/);
 });

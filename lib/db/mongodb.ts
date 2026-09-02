@@ -21,3 +21,9 @@ export async function getDb(): Promise<Db> {
   const client = await getMongoClient();
   return client.db(process.env.MONGODB_DB?.trim() || 'trading_dashboard');
 }
+
+export async function closeMongoConnection(){
+  const pending=globalForMongo.mongoClientPromise;
+  globalForMongo.mongoClientPromise=undefined;
+  if(pending)await (await pending).close();
+}

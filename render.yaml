@@ -1,0 +1,26 @@
+services:
+  - type: web
+    name: trading-platform
+    runtime: node
+    buildCommand: npm ci && npm run build
+    startCommand: npm start
+    healthCheckPath: /api/health
+    envVars:
+      - key: NODE_VERSION
+        value: 22
+      - key: RESOLUTION
+        value: 5m
+      - key: POLL_MS
+        value: 1000
+      - key: MONGODB_URI
+        sync: false
+      - key: AUTH_SECRET
+        sync: false
+      - key: DELTA_LIVE_API_KEY
+        sync: false
+      - key: DELTA_LIVE_API_SECRET
+        sync: false
+      - key: DELTA_DEMO_API_KEY
+        sync: false
+      - key: DELTA_DEMO_API_SECRET
+        sync: false
