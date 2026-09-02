@@ -29,4 +29,6 @@ jobs:
         run: npm ci
 
       - name: Run complete validation
+        env:
+          RESOLUTION: 5m
         run: npm run validate
