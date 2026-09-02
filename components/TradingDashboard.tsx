@@ -125,7 +125,8 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
   }
 
   const running = s.running === true;
-  const deltaOnline = s.connection?.state !== 'offline';
+  const deltaOnline = s.connection?.state === undefined || s.connection?.state === 'online';
+  const deltaConnectionLabel=deltaOnline?'DELTA ONLINE':s.connection?.state==='offline'?'DELTA OFFLINE · RECONNECTING':`${String(s.connection?.code||'DELTA ERROR').replaceAll('_',' ')} · RETRYING`;
   const autoTrade = autoTradeStatus(s.effectiveAutoTrade);
   const money=(value:any)=>value==null?'—':Number(value).toFixed(4);
   const coveredValue=(scope:any,valueField:string,completeField:string)=>scope?.totalTrades===0?'0.0000':scope?.[completeField]?money(scope[valueField]):'—';
@@ -201,7 +202,7 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
 
       <div className={`connectionBadge ${deltaOnline ? 'online' : 'offline'}`}>
         <span className="connectionDot" />
-        {deltaOnline ? 'DELTA ONLINE' : 'DELTA OFFLINE · RECONNECTING'}
+        {deltaConnectionLabel}
       </div>
 
       <div className={`autoTradeBadge ${autoTrade.tone}`}>

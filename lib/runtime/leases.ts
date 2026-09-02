@@ -10,6 +10,7 @@ const systemClock:LeaseClock={now:()=>new Date()};
 async function collection(){const rows=(await getDb()).collection('runtime_locks');await rows.createIndex({expiresAt:1},{name:'runtime_lock_expiry'});return rows as unknown as LeaseCollection;}
 export const entryLeaseKey=(environment:LeaseEnvironment)=>`delta-account-entry:${environment}`;
 export const portfolioLeaseKey=(portfolioId:string)=>`portfolio-runtime:${portfolioId}`;
+export const portfolioEntryLeaseKey=(portfolioId:string)=>`portfolio-entry-delete:${portfolioId}`;
 export const newLeaseOwner=(prefix:string)=>`${prefix}:${randomUUID()}`;
 
 export async function acquireLease(key:string,ownerId:string,leaseMs:number,environment?:LeaseEnvironment,rows?:LeaseCollection,clock:LeaseClock=systemClock){

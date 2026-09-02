@@ -1,16 +1,16 @@
 import { applyRuntimeConfigOverrides, config, configurePortfolioRuntime } from './lib/config';
 import { emaSeries, evaluateSetup } from './lib/strategy';
-import { getCandles, getProduct, getTicker, getWallet, getPosition, getOpenOrders, getFillsBounded, getOrderHistoryBounded, toDeltaMicroseconds, placeMarketOrder, placeBracket, placeProtectiveStopOrder, setLeverage } from './lib/delta';
+import { deltaErrorDetails,getCandles, getProduct, getTicker, getWallet, getPosition, getOpenOrders, getFillsBounded, getOrderHistoryBounded, toDeltaMicroseconds, placeMarketOrder, placeBracket, placeProtectiveStopOrder, setLeverage } from './lib/delta';
 import { readControl, writeStatus } from './lib/state';
 import { persistClosedTrade as persistClosedTradeBase, persistOpenBotTrade as persistOpenBotTradeBase, persistOpenManualTrade as persistOpenManualTradeBase } from './lib/trades/persistence';
 import { findLegacyUnresolvedTrades,findOpenBotTrade as findOpenBotTradeBase, findOpenManualTrades as findOpenManualTradesBase, findUnresolvedBotTrades as findUnresolvedBotTradesBase, findUnresolvedManualTrades as findUnresolvedManualTradesBase, markTradeReconciling,updateTradeProtectionState } from './lib/trades/repository';
-import { applyDailyLossOutcome, classifyBotExitEvidence, deltaTimestampMilliseconds, findBotCloseBoundary, findTradeCloseBoundary, reconstructOpenManualLifecycles, resolvePositionOwnership, stableTradeId as stableTradeIdBase } from './lib/trades/reconciliation';
+import { classifyBotExitEvidence, deltaTimestampMilliseconds, findBotCloseBoundary, findTradeCloseBoundary, reconstructOpenManualLifecycles, resolvePositionOwnership, stableTradeId as stableTradeIdBase, type BotExitOutcome } from './lib/trades/reconciliation';
 import { getRuntimeSettingOverrides } from './lib/settings/repository';
 import { validateRuntimeSettings } from './lib/settings/definitions';
 import { changedRuntimeSettings, pendingInvalidatingKeys, runtimeSettingsRevision, strategyStateKeys } from './lib/settings/live';
 import { findPortfolioById, listPortfolio } from './lib/portfolio/repository';
 import { TradingRuntimeManager,spawnPortfolioWorker } from './lib/runtime/manager';
-import { acquireAccountEntryLease,newLeaseOwner,portfolioLeaseKey,renewLease,verifyLeaseOwnership } from './lib/runtime/leases';
+import { acquireAccountEntryLease,acquireLease,newLeaseOwner,portfolioEntryLeaseKey,portfolioLeaseKey,releaseLease,renewLease,verifyLeaseOwnership } from './lib/runtime/leases';
 import { withExecutionActivity } from './lib/runtime/entry-coordinator';
 import { legacyPositionRequiresReconciliation } from './lib/runtime/legacy-guard';
 import { pendingSetupExpired } from './lib/pending';
@@ -19,6 +19,8 @@ import { findBlockingEntryIntent,findRecoverableConfirmedEntryIntents,markEntryI
 import { EntryNotTransmittedError,reconcilePortfolioEntryIntents,submitPreparedEntryIntent } from './lib/entry-intents/service';
 import { inspectProtectionOrders,protectiveClientOrderId } from './lib/trades/protection';
 import { finalPreOrderSafetyCheck } from './lib/runtime/final-preorder';
+import { dailyLossEntryAllowed,recordDailyLossEvent,restoreDailyLossStreak,tradingDayKey,type DailyLossScope } from './lib/risk/daily-loss-streak';
+import { restoreOpenBotTrade } from './lib/trades/open-bot-restoration';
 
 const portfolioId=process.env.PORTFOLIO_RUNTIME_ID?.trim()||'';
 const runtimeLeaseOwner=process.env.PORTFOLIO_RUNTIME_LEASE_OWNER?.trim()||'';
@@ -41,10 +43,13 @@ let previousPositionSize = 0;
 let activeTrade:any = null;
 let currentDay = '';
 let lossStreak = 0;
+let dailyLossStateReady = false;
+let dailyLossStateError:string|null = 'Daily loss streak has not been restored';
+const pendingDailyLossEvents=new Map<string,{outcome:BotExitOutcome;at:Date}>();
 let uiLogs:any[] = [];
 let tradeEvents:any[] = [];
 let lastBracketSyncAt = 0;
-let connectionState:'online'|'offline' = 'online';
+let connectionState:'online'|'offline'|'error' = 'online';
 let lastOnlineAt:string|null = null;
 let lastOfflineAt:string|null = null;
 let connectionError:string|null = null;
@@ -82,7 +87,7 @@ const BRACKET_SYNC_MS = 5_000;
 const STALE_RECONCILIATION_MS = 60_000;
 
 function persistedSnapshot(record:any) {
-  return {tradeId:record.tradeId,direction:record.side==='SHORT'?'short':'long',source:record.source,attributionStatus:record.source==='bot'?'BOT_CONFIRMED':'MANUAL_CONFIRMED',entryPrice:record.actualEntryPrice??record.intendedEntryPrice,trigger:record.intendedEntryPrice,sl:record.initialSL,tp:record.takeProfit,contracts:record.contracts,ownedContracts:record.contracts,contractValue:record.contractValue,orderId:record.entryOrderId,clientOrderId:record.entryClientOrderId,entryFillIds:record.entryFillIds??[],openedAt:record.entryTime?.valueOf?.()??null,mixedPosition:false};
+  return {tradeId:record.tradeId,direction:record.side==='SHORT'?'short':'long',source:record.source,attributionStatus:record.source==='bot'?'BOT_CONFIRMED':'MANUAL_CONFIRMED',entryPrice:record.actualEntryPrice??record.intendedEntryPrice,actualEntryPrice:record.actualEntryPrice,trigger:record.intendedEntryPrice,sl:record.initialSL,tp:record.takeProfit,contracts:record.contracts,ownedContracts:record.contracts,contractValue:record.contractValue,riskAmount:record.riskAmount??null,takerRate:record.takerRate??null,gstPct:record.gstPct??null,orderId:record.entryOrderId,clientOrderId:record.entryClientOrderId,entryFillIds:record.entryFillIds??[],entryIntentId:record.entryIntentId??null,protectionState:record.protectionState??null,strategyConfig:record.strategyConfig,openedAt:record.entryTime?.valueOf?.()??null,mixedPosition:false};
 }
 
 async function reconcileEntryIntents(){
@@ -107,7 +112,7 @@ async function reconcileStaleBotTrades(lastPrice:number) {
   catch(error:any){addTradeEvent('TRADE_HISTORY_RECONCILIATION_FAILED',{reason:'MONGODB_LOOKUP_FAILED',error:error?.message||String(error)});return;}
   for(const record of unresolved){
     addTradeEvent('STALE_OPEN_TRADE_RECONCILING',{tradeId:record.tradeId});
-    try {const start=toDeltaMicroseconds(Math.max(0,(record.entryTime?.valueOf?.()??now)-60_000));const history=await getFillsBounded(Number(product.id),start);if(!history.complete)throw new Error('Delta fill history pagination incomplete');const boundary=record.entryOrderId?findBotCloseBoundary({productId:Number(product.id),entryOrderId:record.entryOrderId,fills:history.result}):null;if(boundary==null)throw new Error('No proven zero-position fill boundary for stale OPEN trade');const saved=await persistClosedTrade({...persistedSnapshot(record),closedAtBoundary:boundary},Number(product.id),config.symbol,null);addTradeEvent('STALE_OPEN_TRADE_RECONCILED',{tradeId:saved.tradeId,financialStatus:saved.financialStatus});}
+    try {const start=toDeltaMicroseconds(Math.max(0,(record.entryTime?.valueOf?.()??now)-60_000));const history=await getFillsBounded(Number(product.id),start);if(!history.complete)throw new Error('Delta fill history pagination incomplete');const boundary=record.entryOrderId?findBotCloseBoundary({productId:Number(product.id),entryOrderId:record.entryOrderId,fills:history.result}):null;if(boundary==null)throw new Error('No proven zero-position fill boundary for stale OPEN trade');const saved=await persistClosedTrade({...persistedSnapshot(record),closedAtBoundary:boundary},Number(product.id),config.symbol,null);await persistBotDailyLossOutcome(saved.tradeId,persistedBotOutcome(saved));addTradeEvent('STALE_OPEN_TRADE_RECONCILED',{tradeId:saved.tradeId,financialStatus:saved.financialStatus});if(!dailyLossStateReady)return;}
     catch(error:any){const message=error?.message||String(error);try{await markTradeReconciling(record.tradeId,message);}catch{}addTradeEvent('TRADE_HISTORY_RECONCILIATION_FAILED',{tradeId:record.tradeId,error:message});}
   }
 }
@@ -158,6 +163,59 @@ function upsertUiLog(candleTime:number, patch:any) {
 function addTradeEvent(type:string, details:any = {}) {
   tradeEvents.unshift({ id:`${Date.now()}-${Math.random().toString(36).slice(2,8)}`, at:new Date().toISOString(), type, ...details });
   tradeEvents = tradeEvents.slice(0, 100);
+}
+
+function dailyLossScope():DailyLossScope {
+  if(!runtimeEnvironment||!runtimeProductId)throw new Error('Daily loss streak scope is not initialized');
+  return {portfolioId,environment:runtimeEnvironment,productId:runtimeProductId,symbol:config.symbol};
+}
+
+async function restoreCurrentDailyLossStreak(now=new Date()){
+  currentDay=tradingDayKey(now);
+  try{
+    const restored=await restoreDailyLossStreak(dailyLossScope(),now);
+    lossStreak=restored.consecutiveLosses;
+    dailyLossStateReady=true;
+    dailyLossStateError=null;
+    addTradeEvent('DAILY_LOSS_STREAK_RESTORED',{tradingDay:restored.tradingDay,lossStreak});
+  }catch(error:any){
+    dailyLossStateReady=false;
+    dailyLossStateError=error?.message||String(error);
+    addTradeEvent('DAILY_LOSS_STREAK_RESTORE_FAILED',{tradingDay:currentDay,error:dailyLossStateError,newEntries:'BLOCKED'});
+  }
+}
+
+async function persistBotDailyLossOutcome(eventId:string,outcome:BotExitOutcome,now=new Date()){
+  if(outcome!=='WIN'&&outcome!=='LOSS')return true;
+  try{
+    const result=await recordDailyLossEvent({scope:dailyLossScope(),eventId,source:'bot',attributionStatus:'BOT_CONFIRMED',outcome,at:now});
+    if(result.consecutiveLosses==null)throw new Error('Daily loss event did not return durable state');
+    currentDay=result.tradingDay;
+    lossStreak=result.consecutiveLosses;
+    dailyLossStateReady=true;
+    dailyLossStateError=null;
+    pendingDailyLossEvents.delete(eventId);
+    addTradeEvent('DAILY_LOSS_STREAK_PERSISTED',{tradeId:eventId,outcome,tradingDay:currentDay,lossStreak,duplicate:!result.applied});
+    return true;
+  }catch(error:any){
+    dailyLossStateReady=false;
+    dailyLossStateError=error?.message||String(error);
+    pendingDailyLossEvents.set(eventId,{outcome,at:now});
+    addTradeEvent('DAILY_LOSS_STREAK_PERSIST_FAILED',{tradeId:eventId,outcome,error:dailyLossStateError,newEntries:'BLOCKED'});
+    return false;
+  }
+}
+
+async function retryPendingDailyLossEvents(){
+  for(const [eventId,event] of pendingDailyLossEvents){if(!await persistBotDailyLossOutcome(eventId,event.outcome,event.at))return false;}
+  return true;
+}
+
+function persistedBotOutcome(record:any):BotExitOutcome {
+  if(record?.exitReason==='TP')return 'WIN';
+  if(record?.exitReason==='SL')return 'LOSS';
+  const gross=Number(record?.grossPnL);
+  return Number.isFinite(gross)?gross>0?'WIN':gross<0?'LOSS':'BREAKEVEN':'UNKNOWN';
 }
 
 function numeric(v:any):number|null {
@@ -276,28 +334,7 @@ async function refreshPosition(lastPrice:number, force = false) {
     const manualEntries=lifecycleReconstruction.complete?lifecycleReconstruction.manualLifecycles.flatMap(lifecycle=>lifecycle.entryFills):manualOpeningFills(positionSize,fills),manualOrderIds=[...new Set(manualEntries.map(f=>String(f.order_id)))],manualEntryOrderId=manualOrderIds.length===1?manualOrderIds[0]:null,manualEntryOrder=manualEntryOrderId?orders.find(o=>String(o.id)===manualEntryOrderId):null;
     const restoredManual=manualRestored?persistedManual:null;
     if(ownership.staleBotClosed&&persistedBot){void markTradeReconciling(persistedBot.tradeId,ownership.reason).catch(()=>{});addTradeEvent('STALE_OPEN_TRADE_RECONCILING',{tradeId:persistedBot.tradeId,reason:ownership.reason});}
-    activeTrade = ownership.status==='BOT_CONFIRMED' ? {
-      direction,
-      entryPrice:Number(position?.entry_price || persistedBot.actualEntryPrice || persistedBot.intendedEntryPrice || 0),
-      trigger:persistedBot.intendedEntryPrice,
-      sl:persistedBot.initialSL,
-      tp:persistedBot.takeProfit,
-      contracts:Number(persistedBot.contracts),
-      ownedContracts:ownership.botOwnedContracts,
-      contractValue:Number(persistedBot.contractValue || product?.contract_value || 0),
-      positionSize,
-      orderId:persistedBot.entryOrderId,
-      clientOrderId:persistedBot.entryClientOrderId,
-      openedAt:persistedBot.entryTime?.valueOf?.() ?? null,
-      source:'bot',
-      attributionStatus:'BOT_CONFIRMED',
-      mixedPosition:ownership.mixedPosition,
-      tradeId:persistedBot.tradeId,
-      exchangeSync:null,
-      entryIntentId:persistedBot.entryIntentId??null,
-      protectionState:persistedBot.protectionState??'REPAIR_REQUIRED',
-      strategyConfig:persistedBot.strategyConfig
-    } : ownership.status==='MANUAL_CONFIRMED' ? {
+    activeTrade = ownership.status==='BOT_CONFIRMED' ? restoreOpenBotTrade(persistedBot,position,ownership,Number(product?.contract_value||0)) : ownership.status==='MANUAL_CONFIRMED' ? {
       direction,
       entryPrice:Number(position?.entry_price || 0),
       sl:null,
@@ -340,9 +377,8 @@ async function refreshPosition(lastPrice:number, force = false) {
     }
   }
 
-  // Preserve the existing closed-trade streak logic for bot-created trades.
-  // A position that existed before app startup is synchronized and displayed,
-  // but its result is not added to the bot's daily loss streak.
+  // Preserve the existing closed-trade streak logic for confirmed bot-created trades.
+  // Manual and uncertain exchange positions remain excluded.
   if (previousPositionSize !== 0 && positionSize === 0 && activeTrade) {
     const isBot = activeTrade.source === 'bot' && activeTrade.attributionStatus === 'BOT_CONFIRMED';
     let exitClassification:any = { outcome:'UNKNOWN', exitReason:'UNKNOWN', reason:'Exit ownership is not confirmed' };
@@ -354,7 +390,8 @@ async function refreshPosition(lastPrice:number, force = false) {
       } catch(error:any) {
         exitClassification={outcome:'UNKNOWN',exitReason:'UNKNOWN',reason:error?.message||String(error)};
       }
-      lossStreak=applyDailyLossOutcome(lossStreak,exitClassification.outcome);
+      if(!activeTrade.tradeId){dailyLossStateReady=false;dailyLossStateError='Confirmed bot close has no stable trade identity';addTradeEvent('DAILY_LOSS_STREAK_PERSIST_FAILED',{outcome:exitClassification.outcome,error:dailyLossStateError,newEntries:'BLOCKED'});}
+      else await persistBotDailyLossOutcome(activeTrade.tradeId,exitClassification.outcome);
       addTradeEvent('BOT_EXIT_OUTCOME_CLASSIFIED',{outcome:exitClassification.outcome,exitReason:exitClassification.exitReason,actualExitPrice:exitClassification.actualExitPrice??null,reason:exitClassification.reason,lossStreak});
     }
     addTradeEvent('POSITION_CLOSED', {
@@ -387,7 +424,7 @@ async function refreshPosition(lastPrice:number, force = false) {
 
   if(positionSize!==0){try{await syncManualLifecycleLedger(positionSize);}catch(error:any){addTradeEvent('MANUAL_LIFECYCLE_SYNC_PENDING',{reason:error?.message||String(error),paginationComplete:'UNKNOWN'});}}
 
-  if(positionSize===0&&!activeTrade){void reconcileStaleBotTrades(lastPrice);void reconcileStaleManualTrades();}
+  if(positionSize===0&&!activeTrade){await reconcileStaleBotTrades(lastPrice);void reconcileStaleManualTrades();}
 
   cachedPosition = position;
   cachedPositionSize = positionSize;
@@ -466,11 +503,9 @@ async function cycle() {
       : (markPrice || lastTradedPrice || spotPrice);
 
   const nowSec = Math.floor(Date.now()/1000);
-  const day = new Date().toISOString().slice(0,10);
-  if (day !== currentDay) {
-    currentDay = day;
-    lossStreak = 0;
-  }
+  const day = tradingDayKey();
+  if(pendingDailyLossEvents.size)await retryPendingDailyLossEvents();
+  if(!pendingDailyLossEvents.size&&(day !== currentDay||!dailyLossStateReady)) await restoreCurrentDailyLossStreak();
 
   // Slower data is refreshed independently from the 1-second breakout check.
   await refreshPosition(lastPrice);
@@ -532,7 +567,7 @@ async function cycle() {
       pending = null;
     }
 
-    if (strategyStateReady && tradingEnabled && positionSize === 0 && lossStreak < config.maxDailyLosses && !pending) {
+    if (dailyLossStateReady && strategyStateReady && tradingEnabled && positionSize === 0 && lossStreak < config.maxDailyLosses && dailyLossEntryAllowed(dailyLossStateReady,lossStreak,config.maxDailyLosses) && !pending) {
       if (s) pending = {...s,validCandles:config.entryValidCandles,expiresAfterCandleTime:s.candleTime+config.entryValidCandles*config.resolutionSec,configRevision};
     }
 
@@ -544,6 +579,8 @@ async function cycle() {
       decision = candleDecision;
     } else if (positionSize !== 0) {
       candleDecision = { action:'WAIT', reason:'EXISTING_POSITION' };
+    } else if (!dailyLossStateReady) {
+      candleDecision = { action:'WAIT', reason:'DAILY_LOSS_STATE_UNAVAILABLE' };
     } else if (lossStreak >= config.maxDailyLosses) {
       candleDecision = { action:'WAIT', reason:'DAILY_LOSS_LIMIT' };
     } else {
@@ -564,7 +601,7 @@ async function cycle() {
     });
   }
 
-  if (strategyStateReady && tradingEnabled && !blockingEntryIntent && pending && pending.configRevision===configRevision && positionSize === 0 && lossStreak < config.maxDailyLosses) {
+  if (dailyLossStateReady && strategyStateReady && tradingEnabled && !blockingEntryIntent && pending && pending.configRevision===configRevision && positionSize === 0 && lossStreak < config.maxDailyLosses && dailyLossEntryAllowed(dailyLossStateReady,lossStreak,config.maxDailyLosses)) {
     const entryConfigRevision=pending.configRevision;
     const breakout = pending.direction === 'long'
       ? lastPrice > pending.trigger
@@ -583,6 +620,9 @@ async function cycle() {
         decision={action:'WAIT',reason:'ACCOUNT_ENTRY_LOCK_BUSY'};
         addTradeEvent('ACCOUNT_ENTRY_LOCK_BUSY',{environment:runtimeEnvironment});
       }else{
+        const portfolioEntryLease=await acquireLease(portfolioEntryLeaseKey(portfolioId),newLeaseOwner(`entry:${portfolioId}`),90_000,runtimeEnvironment!);
+        if(!portfolioEntryLease){await releaseLease(entryLease);decision={action:'WAIT',reason:'PORTFOLIO_DELETE_IN_PROGRESS'};addTradeEvent('PORTFOLIO_DELETE_IN_PROGRESS',{portfolioId});return;}
+        try{
         await withExecutionActivity(entryLease,portfolioId,async entryExecution=>{
           if(!readControl(portfolioId).running){
             decision={action:'STOPPED',reason:'ROBOT_STOPPED_BEFORE_ORDER'};
@@ -713,7 +753,7 @@ async function cycle() {
               const side:'buy'|'sell' = pending.direction === 'long' ? 'buy' : 'sell';
               const entrySetup={direction:pending.direction,trigger:Number(pending.trigger),sl:Number(pending.sl),candleTime:Number(pending.candleTime),configRevision:entryConfigRevision};
               const finalInput=()=>({identity:{portfolioId,environment:runtimeEnvironment!,symbol:config.symbol,productId:runtimeProductId},setup:entrySetup,config:{revision:entryConfigRevision,autoTrade:config.autoTrade,entryValidCandles:config.entryValidCandles,resolutionSec:config.resolutionSec,riskPct:config.riskPct,rr:config.rr,minStopPct:config.minStopPct,maxEffectiveLeverage:config.maxEffectiveLeverage,maxFeeRiskPct:config.maxFeeRiskPct,gstPct:config.gstPct},product:{id:Number(product.id),contractValue:Number(product.contract_value),tickSize:Number(product.tick_size||0.01),takerRate:Number(product.taker_commission_rate??0.0005)}});
-              const finalDependencies=()=>({robotRunning:()=>readControl(portfolioId).running===true,refreshConfig:async()=>{await refreshRuntimeSettings();return {revision:configRevision,autoTrade:config.autoTrade,entryValidCandles:config.entryValidCandles,resolutionSec:config.resolutionSec,riskPct:config.riskPct,rr:config.rr,minStopPct:config.minStopPct,maxEffectiveLeverage:config.maxEffectiveLeverage,maxFeeRiskPct:config.maxFeeRiskPct,gstPct:config.gstPct};},currentPending:()=>pending,latestCompletedCandleTime:()=>Math.max(Number(completedCandles.at(-1)?.time||0),Math.floor(Date.now()/1000/config.resolutionSec)*config.resolutionSec-config.resolutionSec),leaseOwned:()=>verifyLeaseOwnership(entryLease),leaseLost:()=>entryExecution.ownershipLost(),portfolio:async()=>{const current=await findPortfolioById(portfolioId);return current?{id:String(current._id),environment:current.environment,symbol:current.symbol,productId:current.productId}:null;},position:()=>getPosition(runtimeProductId),availableMargin:async()=>{const wallet=await getWallet(),usd=(wallet?.result||[]).find((w:any)=>w.asset_symbol==='USD')||(wallet?.result||[])[0];return Number(usd?.available_balance_for_robo||usd?.available_balance||0);}});
+              const finalDependencies=()=>({robotRunning:()=>readControl(portfolioId).running===true,refreshConfig:async()=>{await refreshRuntimeSettings();return {revision:configRevision,autoTrade:config.autoTrade,entryValidCandles:config.entryValidCandles,resolutionSec:config.resolutionSec,riskPct:config.riskPct,rr:config.rr,minStopPct:config.minStopPct,maxEffectiveLeverage:config.maxEffectiveLeverage,maxFeeRiskPct:config.maxFeeRiskPct,gstPct:config.gstPct};},currentPending:()=>pending,latestCompletedCandleTime:()=>Math.max(Number(completedCandles.at(-1)?.time||0),Math.floor(Date.now()/1000/config.resolutionSec)*config.resolutionSec-config.resolutionSec),leaseOwned:()=>verifyLeaseOwnership(entryLease),leaseLost:()=>entryExecution.ownershipLost(),portfolioEntryAllowed:async()=>await renewLease(portfolioEntryLease,90_000)&&await verifyLeaseOwnership(portfolioEntryLease),portfolio:async()=>{const current=await findPortfolioById(portfolioId);return current?{id:String(current._id),environment:current.environment,symbol:current.symbol,productId:current.productId}:null;},position:()=>getPosition(runtimeProductId),availableMargin:async()=>{const wallet=await getWallet(),usd=(wallet?.result||[]).find((w:any)=>w.asset_symbol==='USD')||(wallet?.result||[])[0];return Number(usd?.available_balance_for_robo||usd?.available_balance||0);}});
               const finalSafety=await finalPreOrderSafetyCheck(finalInput(),finalDependencies());
               if(!finalSafety.ok){decision={action:'SKIP',reason:finalSafety.reason};addTradeEvent(finalSafety.reason,{direction:entrySetup.direction,signalCandleTime:entrySetup.candleTime,...('guard'in finalSafety?{guard:finalSafety.guard}:{})});return;}
               const identity={portfolioId,environment:runtimeEnvironment!,productId:Number(product.id),side,signalCandleTime:Number(pending.candleTime),configRevision:entryConfigRevision};
@@ -773,6 +813,7 @@ async function cycle() {
       }
           }
         },undefined,{leaseMs:90_000,heartbeatMs:25_000,onLeaseLost:()=>addTradeEvent('ACCOUNT_ENTRY_LEASE_LOST',{environment:runtimeEnvironment})});
+        }finally{await releaseLease(portfolioEntryLease);}
       }
     }
   }
@@ -780,6 +821,7 @@ async function cycle() {
   if (decision.action === 'WAIT') {
     let waitReason = 'NO_VALID_SETUP';
     if (cachedPositionSize !== 0) waitReason = 'EXISTING_POSITION';
+    else if (!dailyLossStateReady) waitReason = 'DAILY_LOSS_STATE_UNAVAILABLE';
     else if (lossStreak >= config.maxDailyLosses) waitReason = 'DAILY_LOSS_LIMIT';
     else if (blockingEntryIntent) waitReason = 'AMBIGUOUS_ENTRY_RECONCILIATION';
     else if (pending) waitReason = 'WAITING_FOR_BREAKOUT';
@@ -829,7 +871,8 @@ async function cycle() {
     activeTrade,
     protection:activeTrade?.source==='bot'?{state:activeTrade.protectionState??'REPAIR_REQUIRED',status:activeTrade.protectionState==='ACTIVE'?'PROTECTED':activeTrade.protectionState==='PENDING'?'PROTECTION PENDING':'PROTECTION REPAIR REQUIRED'}:null,
     lossStreak,
-    dailyBlocked:lossStreak >= config.maxDailyLosses,
+    dailyLossState:{ready:dailyLossStateReady,tradingDay:currentDay,error:dailyLossStateError},
+    dailyBlocked:!dailyLossStateReady||lossStreak >= config.maxDailyLosses,
     strategy:{
       emaLen:config.emaLen,
       slopeLookback:config.slopeLookback,
@@ -925,6 +968,7 @@ async function main() {
   if(!resolved.credentialsConfigured){
     writeStatus({portfolioId,environment:portfolio.environment,symbol:portfolio.symbol,productId:portfolio.productId,running:false,credentialsConfigured:false,autoTrade:config.autoTrade,configuredAutoTrade:config.autoTrade,effectiveAutoTrade:false,currentStatus:{action:'STOPPED',reason:'CREDENTIALS_NOT_CONFIGURED'},message:'Credentials Not Configured',updatedAt:new Date().toISOString()},portfolioId);
   }
+  await restoreCurrentDailyLossStreak();
   try{await reconcileEntryIntents();}catch(error:any){addTradeEvent('ENTRY_RECONCILIATION_PENDING',{reason:error?.message||String(error)});blockingEntryIntent={state:'AMBIGUOUS',intentId:null,clientOrderId:null,status:'ENTRY_INTENT_LOOKUP_FAILED'};}
   while (true) {
     try {
@@ -936,9 +980,9 @@ async function main() {
     try {
       await cycle();
     } catch (e:any) {
-      const message = e?.message || String(e);
+      const classified=deltaErrorDetails(e),message=`${classified.code}: ${classified.message}`;
       const wasOnline = connectionState === 'online';
-      connectionState = 'offline';
+      connectionState = classified.network?'offline':'error';
       connectionError = message;
       consecutiveNetworkFailures += 1;
       if (wasOnline) {
@@ -958,7 +1002,7 @@ async function main() {
             autoTrade:config.autoTrade,
             configuredAutoTrade:config.autoTrade,
             effectiveAutoTrade:readControl(portfolioId).running===true&&config.autoTrade,
-        connection:{ state:'offline', lastOnlineAt, lastOfflineAt, error:connectionError, consecutiveFailures:consecutiveNetworkFailures },
+        connection:{ state:connectionState,code:classified.code, lastOnlineAt, lastOfflineAt, error:connectionError, consecutiveFailures:consecutiveNetworkFailures },
         error:message,
         tradeEvents,
         logs:uiLogs

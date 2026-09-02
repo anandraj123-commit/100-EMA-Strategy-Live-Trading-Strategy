@@ -1,12 +1,12 @@
 import { pendingSetupExpired } from '../pending';
 
-export type FinalPreOrderReason='FINAL_PREORDER_ROBOT_STOPPED'|'FINAL_PREORDER_AUTO_TRADE_OFF'|'FINAL_PREORDER_CONFIG_CHANGED'|'FINAL_PREORDER_PENDING_REPLACED'|'FINAL_PREORDER_PENDING_EXPIRED'|'FINAL_PREORDER_LEASE_LOST'|'FINAL_PREORDER_POSITION_NONZERO'|'FINAL_PREORDER_MARGIN_INVALID'|'FINAL_PREORDER_RISK_GUARD'|'FINAL_PREORDER_PORTFOLIO_MISMATCH';
+export type FinalPreOrderReason='FINAL_PREORDER_ROBOT_STOPPED'|'FINAL_PREORDER_AUTO_TRADE_OFF'|'FINAL_PREORDER_CONFIG_CHANGED'|'FINAL_PREORDER_PENDING_REPLACED'|'FINAL_PREORDER_PENDING_EXPIRED'|'FINAL_PREORDER_LEASE_LOST'|'FINAL_PREORDER_DELETION_IN_PROGRESS'|'FINAL_PREORDER_POSITION_NONZERO'|'FINAL_PREORDER_MARGIN_INVALID'|'FINAL_PREORDER_RISK_GUARD'|'FINAL_PREORDER_PORTFOLIO_MISMATCH';
 export type FinalPending={direction:'long'|'short';trigger:number;sl:number;candleTime:number;configRevision:string};
 export type FinalConfig={revision:string;autoTrade:boolean;entryValidCandles:number;resolutionSec:number;riskPct:number;rr:number;minStopPct:number;maxEffectiveLeverage:number;maxFeeRiskPct:number;gstPct:number};
 export type FinalIdentity={portfolioId:string;environment:'real'|'demo';symbol:string;productId:number};
 export type FinalProduct={id:number;contractValue:number;tickSize:number;takerRate:number};
 export type FinalPreOrderInput={identity:FinalIdentity;setup:FinalPending;config:FinalConfig;product:FinalProduct;expectedContracts?:number};
-export type FinalPreOrderDependencies={robotRunning:()=>boolean;refreshConfig:()=>Promise<FinalConfig>;currentPending:()=>FinalPending|null;latestCompletedCandleTime:()=>number;leaseOwned:()=>Promise<boolean>;leaseLost:()=>boolean;portfolio:()=>Promise<{id:string;environment:string;symbol:string;productId:number}|null>;position:()=>Promise<any>;availableMargin:()=>Promise<number>};
+export type FinalPreOrderDependencies={robotRunning:()=>boolean;refreshConfig:()=>Promise<FinalConfig>;currentPending:()=>FinalPending|null;latestCompletedCandleTime:()=>number;leaseOwned:()=>Promise<boolean>;leaseLost:()=>boolean;portfolioEntryAllowed:()=>Promise<boolean>;portfolio:()=>Promise<{id:string;environment:string;symbol:string;productId:number}|null>;position:()=>Promise<any>;availableMargin:()=>Promise<number>};
 
 const sameSetup=(a:FinalPending|null,b:FinalPending)=>Boolean(a&&a.direction===b.direction&&a.trigger===b.trigger&&a.sl===b.sl&&a.candleTime===b.candleTime&&a.configRevision===b.configRevision);
 const roundToTick=(price:number,tick:number)=>Math.round(price/tick)*tick;
@@ -21,6 +21,7 @@ export async function finalPreOrderSafetyCheck(input:FinalPreOrderInput,deps:Fin
   if(!sameSetup(currentPending,input.setup))return blocked('FINAL_PREORDER_PENDING_REPLACED');
   if(pendingSetupExpired(currentPending,deps.latestCompletedCandleTime(),currentConfig.entryValidCandles,currentConfig.resolutionSec))return blocked('FINAL_PREORDER_PENDING_EXPIRED');
   if(deps.leaseLost()||!await deps.leaseOwned())return blocked('FINAL_PREORDER_LEASE_LOST');
+  if(!await deps.portfolioEntryAllowed())return blocked('FINAL_PREORDER_DELETION_IN_PROGRESS');
   const portfolio=await deps.portfolio();
   if(!portfolio||portfolio.id!==input.identity.portfolioId||portfolio.environment!==input.identity.environment||portfolio.symbol!==input.identity.symbol||portfolio.productId!==input.identity.productId||input.product.id!==input.identity.productId)return blocked('FINAL_PREORDER_PORTFOLIO_MISMATCH');
   if(Number((await deps.position())?.size||0)!==0)return blocked('FINAL_PREORDER_POSITION_NONZERO');

@@ -28,7 +28,7 @@ export const runtimeSettingDefinitions:SettingDefinition[]=[
   numberSetting('ENTRY_VALID_CANDLES','Entry valid candles',config.entryValidCandles,1,100,true),
   numberSetting('RR','Risk/reward',config.rr,0.1,100),
   numberSetting('RISK_PCT','Risk percent',config.riskPct,0.01,100),
-  choiceSetting('RISK_BASE','Risk base',config.riskBase,['equity','available']),
+  choiceSetting('RISK_BASE','Risk base',config.riskBase,['available']),
   numberSetting('MAX_DAILY_CONSECUTIVE_LOSSES','Maximum daily consecutive losses',config.maxDailyLosses,1,100,true),
   numberSetting('MIN_STOP_PCT','Minimum stop percent',config.minStopPct,0,100),
   numberSetting('MAX_EFFECTIVE_LEVERAGE','Maximum effective leverage',config.maxEffectiveLeverage,1,1000),

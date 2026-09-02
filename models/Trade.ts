@@ -29,6 +29,9 @@ export interface TradeDocument {
   quantity: number | null;
   contracts: number | null;
   contractValue: number | null;
+  riskAmount?: number | null;
+  takerRate?: number | null;
+  gstPct?: number | null;
   initialSL: number | null;
   takeProfit: number | null;
   exitTime: Date | null;

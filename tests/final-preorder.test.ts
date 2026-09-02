@@ -6,7 +6,7 @@ import { EntryNotTransmittedError,submitPreparedEntryIntent } from '../lib/entry
 const setup={direction:'long' as const,trigger:100,sl:90,candleTime:1_000,configRevision:'rev'};
 const config={revision:'rev',autoTrade:true,entryValidCandles:2,resolutionSec:60,riskPct:1,rr:8,minStopPct:0,maxEffectiveLeverage:100,maxFeeRiskPct:20,gstPct:18};
 const input={identity:{portfolioId:'p1',environment:'demo' as const,symbol:'BTCUSD',productId:27},setup,config,product:{id:27,contractValue:0.01,tickSize:0.5,takerRate:0.0005}};
-function harness(overrides:Partial<FinalPreOrderDependencies>={}){let positionCalls=0,marginCalls=0;const deps:FinalPreOrderDependencies={robotRunning:()=>true,refreshConfig:async()=>config,currentPending:()=>setup,latestCompletedCandleTime:()=>1_119,leaseOwned:async()=>true,leaseLost:()=>false,portfolio:async()=>({id:'p1',environment:'demo',symbol:'BTCUSD',productId:27}),position:async()=>{positionCalls++;return{size:0}},availableMargin:async()=>{marginCalls++;return 1_000},...overrides};return{deps,positionCalls:()=>positionCalls,marginCalls:()=>marginCalls};}
+function harness(overrides:Partial<FinalPreOrderDependencies>={}){let positionCalls=0,marginCalls=0;const deps:FinalPreOrderDependencies={robotRunning:()=>true,refreshConfig:async()=>config,currentPending:()=>setup,latestCompletedCandleTime:()=>1_119,leaseOwned:async()=>true,leaseLost:()=>false,portfolioEntryAllowed:async()=>true,portfolio:async()=>({id:'p1',environment:'demo',symbol:'BTCUSD',productId:27}),position:async()=>{positionCalls++;return{size:0}},availableMargin:async()=>{marginCalls++;return 1_000},...overrides};return{deps,positionCalls:()=>positionCalls,marginCalls:()=>marginCalls};}
 async function failureReason(value:ReturnType<typeof finalPreOrderSafetyCheck>){const result=await value;return result.ok?null:result.reason;}
 
 test('final barrier uses fresh position/margin and unchanged risk formula',async()=>{const h=harness(),result=await finalPreOrderSafetyCheck(input,h.deps);assert.equal(result.ok,true);if(!result.ok)return;assert.equal(h.positionCalls(),1);assert.equal(h.marginCalls(),1);assert.equal(result.riskAmount,10);assert.equal(result.contracts,100);assert.equal(result.effectiveLeverage,0.1);});
@@ -19,6 +19,7 @@ for(const [name,override,reason] of [
   ['expiry',{latestCompletedCandleTime:()=>1_120},'FINAL_PREORDER_PENDING_EXPIRED'],
   ['missing lease',{leaseOwned:async()=>false},'FINAL_PREORDER_LEASE_LOST'],
   ['heartbeat lease loss',{leaseLost:()=>true},'FINAL_PREORDER_LEASE_LOST'],
+  ['portfolio deletion coordination',{portfolioEntryAllowed:async()=>false},'FINAL_PREORDER_DELETION_IN_PROGRESS'],
   ['fresh manual position',{position:async()=>({size:1})},'FINAL_PREORDER_POSITION_NONZERO'],
   ['invalid margin',{availableMargin:async()=>0},'FINAL_PREORDER_MARGIN_INVALID'],
   ['portfolio id mismatch',{portfolio:async()=>({id:'p2',environment:'demo',symbol:'BTCUSD',productId:27})},'FINAL_PREORDER_PORTFOLIO_MISMATCH'],

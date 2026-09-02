@@ -3,26 +3,34 @@
   "environment": "real",
   "credentialsConfigured": false,
   "running": false,
-  "updatedAt": "2026-09-01T23:51:40.281Z",
+  "updatedAt": "2026-09-02T11:23:31.201Z",
   "env": "live",
   "symbol": "BTCUSD",
   "autoTrade": false,
   "configuredAutoTrade": false,
   "effectiveAutoTrade": false,
   "connection": {
-    "state": "offline",
+    "state": "error",
+    "code": "DELTA_UNKNOWN_ERROR",
     "lastOnlineAt": null,
-    "lastOfflineAt": "2026-09-01T23:51:39.234Z",
-    "error": "Credentials Not Configured",
-    "consecutiveFailures": 2
+    "lastOfflineAt": "2026-09-02T11:20:50.552Z",
+    "error": "DELTA_UNKNOWN_ERROR: Unknown Delta request error",
+    "consecutiveFailures": 147
   },
-  "error": "Credentials Not Configured",
+  "error": "DELTA_UNKNOWN_ERROR: Unknown Delta request error",
   "tradeEvents": [
     {
-      "id": "1788306699234-ozegn7",
-      "at": "2026-09-01T23:51:39.234Z",
+      "id": "1788348050552-ek0gqx",
+      "at": "2026-09-02T11:20:50.552Z",
       "type": "CONNECTION_LOST",
-      "error": "Credentials Not Configured"
+      "error": "DELTA_UNKNOWN_ERROR: Unknown Delta request error"
+    },
+    {
+      "id": "1788348049924-qpxzf8",
+      "at": "2026-09-02T11:20:49.924Z",
+      "type": "DAILY_LOSS_STREAK_RESTORED",
+      "tradingDay": "2026-09-02",
+      "lossStreak": 0
     }
   ],
   "logs": []

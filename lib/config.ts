@@ -46,6 +46,11 @@ if (!Number.isFinite(entryValidCandlesRaw) || entryValidCandlesRaw < 1) {
   throw new Error('ENTRY_VALID_CANDLES must be a number greater than or equal to 1.');
 }
 const entryValidCandles = Math.floor(entryValidCandlesRaw);
+export function validateRiskBase(value:unknown):'available' {
+  if(value!=='available')throw new Error('RISK_BASE must be available');
+  return 'available';
+}
+const riskBase=validateRiskBase((process.env.RISK_BASE||'available').trim().toLowerCase());
 
 export const config = {
   env: (process.env.DELTA_ENV || 'demo') as 'demo' | 'live',
@@ -66,7 +71,7 @@ export const config = {
   gstPct: Number(process.env.GST_PCT || 18),
   orderLeverage: Number(process.env.ORDER_LEVERAGE || 100),
   autoTrade: (process.env.AUTO_TRADE || 'false').toLowerCase() === 'true',
-  riskBase: (process.env.RISK_BASE || 'available') as 'equity' | 'available',
+  riskBase,
   // Delta chart's 'Traded Price' corresponds to the ticker last traded price.
   // Keep this environment-driven; default to last so live breakout matches that chart.
   priceSource: (process.env.PRICE_SOURCE || 'last') as 'mark'|'last'|'spot',
@@ -93,6 +98,7 @@ export function configurePortfolioRuntime(environment:RuntimeEnvironment,symbol:
 }
 
 export function applyRuntimeConfigOverrides(values:Record<string,string|number|boolean>){
+  if('RISK_BASE' in values)validateRiskBase(values.RISK_BASE);
   const mapping:Record<string,keyof typeof config>={RESOLUTION:'resolution',AUTO_TRADE:'autoTrade',POLL_MS:'pollMs',EMA_LENGTH:'emaLen',SLOPE_LOOKBACK:'slopeLookback',ENTRY_VALID_CANDLES:'entryValidCandles',RR:'rr',RISK_PCT:'riskPct',RISK_BASE:'riskBase',MAX_DAILY_CONSECUTIVE_LOSSES:'maxDailyLosses',MIN_STOP_PCT:'minStopPct',MAX_EFFECTIVE_LEVERAGE:'maxEffectiveLeverage',MAX_FEE_RISK_PCT:'maxFeeRiskPct',GST_PCT:'gstPct',ORDER_LEVERAGE:'orderLeverage',PRICE_SOURCE:'priceSource'};
   for(const [key,value] of Object.entries(values)){const property=mapping[key];if(property)(config as Record<string,unknown>)[property]=value;}
   config.resolutionSec=resolutionToSeconds(config.resolution);
