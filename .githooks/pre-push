@@ -1,0 +1,14 @@
+#!/bin/sh
+set -eu
+
+protect_main=false
+while read -r local_ref local_oid remote_ref remote_oid; do
+  if [ "$remote_ref" = "refs/heads/main" ]; then
+    protect_main=true
+  fi
+done
+
+if [ "$protect_main" = "true" ]; then
+  echo "Validating push that updates refs/heads/main..."
+  npm run validate
+fi

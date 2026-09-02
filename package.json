@@ -9,8 +9,12 @@
     "check-env": "tsx check-env.ts",
     "create-admin": "tsx scripts/create-admin.ts",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test tests/*.test.ts",
-    "secret:scan": "node --import tsx scripts/scan-secrets.ts"
+    "test": "node scripts/run-tests.mjs",
+    "secret:scan": "node --import tsx scripts/scan-secrets.ts",
+    "diff:check": "git diff --check && git diff --cached --check",
+    "validate": "npm test && npm run typecheck && npm run build && npm run secret:scan && npm run diff:check",
+    "hooks:install": "node scripts/install-hooks.mjs",
+    "prepare": "npm run hooks:install"
   },
   "dependencies": {
     "bcryptjs": "^3.0.3",
