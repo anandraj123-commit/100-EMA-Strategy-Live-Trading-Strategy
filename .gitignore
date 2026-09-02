@@ -7,3 +7,6 @@ node_modules/
 data/status.json
 data/supervisor-health.json
 data/supervisor-health.json.*.tmp
+# Generated portfolio runtime state
+data/status-*.json
+data/control-*.json
