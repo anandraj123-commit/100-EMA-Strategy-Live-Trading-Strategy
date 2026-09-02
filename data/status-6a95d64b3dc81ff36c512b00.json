@@ -3,7 +3,7 @@
   "environment": "real",
   "credentialsConfigured": false,
   "running": false,
-  "updatedAt": "2026-09-02T11:46:14.652Z",
+  "updatedAt": "2026-09-02T13:57:18.244Z",
   "env": "live",
   "symbol": "BTCUSD",
   "autoTrade": false,
@@ -13,21 +13,21 @@
     "state": "error",
     "code": "DELTA_UNKNOWN_ERROR",
     "lastOnlineAt": null,
-    "lastOfflineAt": "2026-09-02T11:40:53.010Z",
+    "lastOfflineAt": "2026-09-02T13:49:29.662Z",
     "error": "DELTA_UNKNOWN_ERROR: Unknown Delta request error",
-    "consecutiveFailures": 308
+    "consecutiveFailures": 450
   },
   "error": "DELTA_UNKNOWN_ERROR: Unknown Delta request error",
   "tradeEvents": [
     {
-      "id": "1788349253010-6ac8gm",
-      "at": "2026-09-02T11:40:53.010Z",
+      "id": "1788356969662-tx2ait",
+      "at": "2026-09-02T13:49:29.662Z",
       "type": "CONNECTION_LOST",
       "error": "DELTA_UNKNOWN_ERROR: Unknown Delta request error"
     },
     {
-      "id": "1788349252315-g1djts",
-      "at": "2026-09-02T11:40:52.315Z",
+      "id": "1788356969100-poarq0",
+      "at": "2026-09-02T13:49:29.100Z",
       "type": "DAILY_LOSS_STREAK_RESTORED",
       "tradingDay": "2026-09-02",
       "lossStreak": 0

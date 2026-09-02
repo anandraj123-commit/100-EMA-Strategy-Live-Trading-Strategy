@@ -3,7 +3,7 @@
   "environment": "real",
   "credentialsConfigured": false,
   "running": false,
-  "updatedAt": "2026-09-02T11:46:15.442Z",
+  "updatedAt": "2026-09-02T13:57:18.032Z",
   "env": "live",
   "symbol": "XAUTUSD",
   "autoTrade": false,
@@ -13,21 +13,21 @@
     "state": "error",
     "code": "DELTA_UNKNOWN_ERROR",
     "lastOnlineAt": null,
-    "lastOfflineAt": "2026-09-02T11:40:52.761Z",
+    "lastOfflineAt": "2026-09-02T13:49:29.793Z",
     "error": "DELTA_UNKNOWN_ERROR: Unknown Delta request error",
-    "consecutiveFailures": 310
+    "consecutiveFailures": 448
   },
   "error": "DELTA_UNKNOWN_ERROR: Unknown Delta request error",
   "tradeEvents": [
     {
-      "id": "1788349252761-bd1tj9",
-      "at": "2026-09-02T11:40:52.761Z",
+      "id": "1788356969793-qvl6ra",
+      "at": "2026-09-02T13:49:29.793Z",
       "type": "CONNECTION_LOST",
       "error": "DELTA_UNKNOWN_ERROR: Unknown Delta request error"
     },
     {
-      "id": "1788349252161-z9jyny",
-      "at": "2026-09-02T11:40:52.161Z",
+      "id": "1788356969186-qvdm63",
+      "at": "2026-09-02T13:49:29.186Z",
       "type": "DAILY_LOSS_STREAK_RESTORED",
       "tradingDay": "2026-09-02",
       "lossStreak": 0

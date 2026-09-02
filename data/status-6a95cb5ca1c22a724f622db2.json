@@ -1,31 +1,31 @@
 {
   "portfolioId": "6a95cb5ca1c22a724f622db2",
   "environment": "demo",
-  "running": true,
-  "updatedAt": "2026-09-02T11:46:14.418Z",
+  "running": false,
+  "updatedAt": "2026-09-02T13:57:17.247Z",
   "connection": {
     "state": "online",
-    "lastOnlineAt": "2026-09-02T11:46:14.418Z",
+    "lastOnlineAt": "2026-09-02T13:57:17.247Z",
     "lastOfflineAt": null,
     "error": null,
     "consecutiveFailures": 0
   },
   "env": "demo",
-  "autoTrade": true,
-  "configuredAutoTrade": true,
-  "effectiveAutoTrade": true,
-  "configRevision": "{\"AUTO_TRADE\":true,\"EMA_LENGTH\":100,\"ENTRY_VALID_CANDLES\":2,\"GST_PCT\":18,\"MAX_DAILY_CONSECUTIVE_LOSSES\":10,\"MAX_EFFECTIVE_LEVERAGE\":100,\"MAX_FEE_RISK_PCT\":20,\"MIN_STOP_PCT\":0,\"ORDER_LEVERAGE\":100,\"POLL_MS\":1000,\"PRICE_SOURCE\":\"last\",\"RESOLUTION\":\"1m\",\"RISK_BASE\":\"available\",\"RISK_PCT\":1,\"RR\":8,\"SLOPE_LOOKBACK\":3}",
+  "autoTrade": false,
+  "configuredAutoTrade": false,
+  "effectiveAutoTrade": false,
+  "configRevision": "{\"AUTO_TRADE\":false,\"EMA_LENGTH\":100,\"ENTRY_VALID_CANDLES\":2,\"GST_PCT\":18,\"MAX_DAILY_CONSECUTIVE_LOSSES\":10,\"MAX_EFFECTIVE_LEVERAGE\":100,\"MAX_FEE_RISK_PCT\":20,\"MIN_STOP_PCT\":0,\"ORDER_LEVERAGE\":100,\"POLL_MS\":1000,\"PRICE_SOURCE\":\"last\",\"RESOLUTION\":\"1m\",\"RISK_BASE\":\"available\",\"RISK_PCT\":1,\"RR\":8,\"SLOPE_LOOKBACK\":3}",
   "strategyStateReady": true,
   "symbol": "BTCUSD",
   "productId": 84,
   "contractValue": "0.001",
   "takerRate": "0.0005",
-  "price": 76618.5,
+  "price": 77168.5,
   "priceSource": "last",
-  "markPrice": 76624.51850656,
-  "lastTradedPrice": 76618.5,
-  "spotPrice": 76642.4,
-  "tickerTimestamp": 1788349568959176,
+  "markPrice": 77162.7154487,
+  "lastTradedPrice": 77168.5,
+  "spotPrice": 77191.5,
+  "tickerTimestamp": 1788357432066254,
   "equity": 100,
   "available": 100,
   "riskBase": "available",
@@ -33,16 +33,7 @@
     "size": 0,
     "entryPrice": 0
   },
-  "pending": {
-    "direction": "long",
-    "trigger": 76631.5,
-    "sl": 76591,
-    "candleTime": 1788349500,
-    "ema": 76599.90602416919,
-    "validCandles": 2,
-    "expiresAfterCandleTime": 1788349620,
-    "configRevision": "{\"AUTO_TRADE\":true,\"EMA_LENGTH\":100,\"ENTRY_VALID_CANDLES\":2,\"GST_PCT\":18,\"MAX_DAILY_CONSECUTIVE_LOSSES\":10,\"MAX_EFFECTIVE_LEVERAGE\":100,\"MAX_FEE_RISK_PCT\":20,\"MIN_STOP_PCT\":0,\"ORDER_LEVERAGE\":100,\"POLL_MS\":1000,\"PRICE_SOURCE\":\"last\",\"RESOLUTION\":\"1m\",\"RISK_BASE\":\"available\",\"RISK_PCT\":1,\"RR\":8,\"SLOPE_LOOKBACK\":3}"
-  },
+  "pending": null,
   "activeTrade": null,
   "protection": null,
   "lossStreak": 0,
@@ -73,47 +64,38 @@
     "positionMs": 5000,
     "walletMs": 30000,
     "candles": "new completed 1m candle",
-    "lastPositionFetchAt": "2026-09-02T11:46:11.670Z",
-    "lastWalletFetchAt": "2026-09-02T11:45:59.027Z",
-    "lastCandleFetchAt": "2026-09-02T11:46:03.559Z"
+    "lastPositionFetchAt": "2026-09-02T13:57:15.848Z",
+    "lastWalletFetchAt": "2026-09-02T13:57:11.995Z",
+    "lastCandleFetchAt": "2026-09-02T13:57:02.869Z"
   },
   "decision": {
     "action": "WAIT"
   },
   "currentStatus": {
-    "action": "WAIT",
-    "reason": "WAITING_FOR_BREAKOUT",
-    "at": "2026-09-02T11:46:14.418Z"
+    "action": "STOPPED",
+    "reason": "ROBOT_STOPPED",
+    "at": "2026-09-02T13:57:17.247Z"
   },
   "tradeEvents": [
     {
-      "id": "1788349563559-gx626q",
-      "at": "2026-09-02T11:46:03.559Z",
-      "type": "PENDING_SETUP_EXPIRED",
-      "direction": "long",
-      "signalCandleTime": 1788349380,
-      "trigger": 76659.5,
-      "validCandles": 2
-    },
-    {
-      "id": "1788349254652-sbi7ff",
-      "at": "2026-09-02T11:40:54.652Z",
+      "id": "1788356971101-aecpru",
+      "at": "2026-09-02T13:49:31.101Z",
       "type": "STRATEGY_STATE_READY",
-      "configRevision": "{\"AUTO_TRADE\":true,\"EMA_LENGTH\":100,\"ENTRY_VALID_CANDLES\":2,\"GST_PCT\":18,\"MAX_DAILY_CONSECUTIVE_LOSSES\":10,\"MAX_EFFECTIVE_LEVERAGE\":100,\"MAX_FEE_RISK_PCT\":20,\"MIN_STOP_PCT\":0,\"ORDER_LEVERAGE\":100,\"POLL_MS\":1000,\"PRICE_SOURCE\":\"last\",\"RESOLUTION\":\"1m\",\"RISK_BASE\":\"available\",\"RISK_PCT\":1,\"RR\":8,\"SLOPE_LOOKBACK\":3}",
+      "configRevision": "{\"AUTO_TRADE\":false,\"EMA_LENGTH\":100,\"ENTRY_VALID_CANDLES\":2,\"GST_PCT\":18,\"MAX_DAILY_CONSECUTIVE_LOSSES\":10,\"MAX_EFFECTIVE_LEVERAGE\":100,\"MAX_FEE_RISK_PCT\":20,\"MIN_STOP_PCT\":0,\"ORDER_LEVERAGE\":100,\"POLL_MS\":1000,\"PRICE_SOURCE\":\"last\",\"RESOLUTION\":\"1m\",\"RISK_BASE\":\"available\",\"RISK_PCT\":1,\"RR\":8,\"SLOPE_LOOKBACK\":3}",
       "candleHistoryBars": 1012
     },
     {
-      "id": "1788349252096-25zs6e",
-      "at": "2026-09-02T11:40:52.096Z",
+      "id": "1788356968989-qw33sh",
+      "at": "2026-09-02T13:49:28.989Z",
       "type": "DAILY_LOSS_STREAK_RESTORED",
       "tradingDay": "2026-09-02",
       "lossStreak": 0
     },
     {
-      "id": "1788349252055-7rlczy",
-      "at": "2026-09-02T11:40:52.055Z",
+      "id": "1788356968947-6704vo",
+      "at": "2026-09-02T13:49:28.947Z",
       "type": "RUNTIME_SETTINGS_LOADED",
-      "count": 15,
+      "count": 16,
       "source": "MongoDB",
       "appliedAt": "WORKER_START"
     }
@@ -121,222 +103,25 @@
   "entryIntent": null,
   "logs": [
     {
-      "candleTime": 1788349500,
-      "loggedAt": "2026-09-02T11:46:03.559Z",
+      "candleTime": 1788357360,
+      "loggedAt": "2026-09-02T13:57:02.869Z",
       "candle": {
-        "open": 76626.5,
-        "high": 76631.5,
-        "low": 76591,
-        "close": 76627
+        "open": 77008,
+        "high": 77122,
+        "low": 77008,
+        "close": 77122
       },
       "price": {
         "source": "last",
         "candleSource": "traded_price",
-        "strategy": 76627,
-        "mark": 76627.67246345,
-        "last": 76627,
-        "spot": 76648.3
+        "strategy": 77122,
+        "mark": 77127.38098277,
+        "last": 77122,
+        "spot": 77158.9
       },
       "ema": {
-        "current": 76599.90602416919,
-        "previous": 76598.36188186068,
-        "lookback": 3,
-        "direction": "UP"
-      },
-      "buy": {
-        "slope": true,
-        "patternA": false,
-        "patternB": true,
-        "setup": true
-      },
-      "sell": {
-        "slope": false,
-        "patternA": false,
-        "patternB": false,
-        "setup": false
-      },
-      "setup": {
-        "direction": "long",
-        "trigger": 76631.5,
-        "sl": 76591
-      },
-      "pending": {
-        "direction": "long",
-        "trigger": 76631.5,
-        "sl": 76591,
-        "candleTime": 1788349500,
-        "validCandles": 2,
-        "expiresAfterCandleTime": 1788349620
-      },
-      "account": {
-        "equity": 100,
-        "available": 100,
-        "riskBase": "available",
-        "riskPct": 1,
-        "positionSize": 0,
-        "lossStreak": 0
-      },
-      "decision": {
-        "action": "WAIT",
-        "reason": "WAITING_FOR_BREAKOUT"
-      },
-      "breakout": {
-        "direction": "long",
-        "trigger": 76631.5,
-        "currentPrice": 76618.5,
-        "passed": false
-      }
-    },
-    {
-      "candleTime": 1788349440,
-      "loggedAt": "2026-09-02T11:45:02.522Z",
-      "candle": {
-        "open": 76630.5,
-        "high": 76630.5,
-        "low": 76616,
-        "close": 76627
-      },
-      "price": {
-        "source": "last",
-        "candleSource": "traded_price",
-        "strategy": 76618.5,
-        "mark": 76618.68789641,
-        "last": 76618.5,
-        "spot": 76643.2
-      },
-      "ema": {
-        "current": 76599.35867109711,
-        "previous": 76597.21767742728,
-        "lookback": 3,
-        "direction": "UP"
-      },
-      "buy": {
-        "slope": true,
-        "patternA": false,
-        "patternB": false,
-        "setup": false
-      },
-      "sell": {
-        "slope": false,
-        "patternA": false,
-        "patternB": false,
-        "setup": false
-      },
-      "setup": null,
-      "pending": {
-        "direction": "long",
-        "trigger": 76659.5,
-        "sl": 76590.5,
-        "candleTime": 1788349380,
-        "validCandles": 2,
-        "expiresAfterCandleTime": 1788349500
-      },
-      "account": {
-        "equity": 100,
-        "available": 100,
-        "riskBase": "available",
-        "riskPct": 1,
-        "positionSize": 0,
-        "lossStreak": 0
-      },
-      "decision": {
-        "action": "WAIT",
-        "reason": "WAITING_FOR_BREAKOUT"
-      },
-      "breakout": {
-        "direction": "long",
-        "trigger": 76659.5,
-        "currentPrice": 76627,
-        "passed": false
-      }
-    },
-    {
-      "candleTime": 1788349380,
-      "loggedAt": "2026-09-02T11:44:03.458Z",
-      "candle": {
-        "open": 76659.5,
-        "high": 76659.5,
-        "low": 76590.5,
-        "close": 76620.5
-      },
-      "price": {
-        "source": "last",
-        "candleSource": "traded_price",
-        "strategy": 76620.5,
-        "mark": 76627.50949746,
-        "last": 76620.5,
-        "spot": 76647.8
-      },
-      "ema": {
-        "current": 76598.80026037616,
-        "previous": 76595.85843854917,
-        "lookback": 3,
-        "direction": "UP"
-      },
-      "buy": {
-        "slope": true,
-        "patternA": false,
-        "patternB": true,
-        "setup": true
-      },
-      "sell": {
-        "slope": false,
-        "patternA": false,
-        "patternB": false,
-        "setup": false
-      },
-      "setup": {
-        "direction": "long",
-        "trigger": 76659.5,
-        "sl": 76590.5
-      },
-      "pending": {
-        "direction": "long",
-        "trigger": 76659.5,
-        "sl": 76590.5,
-        "candleTime": 1788349380,
-        "validCandles": 2,
-        "expiresAfterCandleTime": 1788349500
-      },
-      "account": {
-        "equity": 100,
-        "available": 100,
-        "riskBase": "available",
-        "riskPct": 1,
-        "positionSize": 0,
-        "lossStreak": 0
-      },
-      "decision": {
-        "action": "WAIT",
-        "reason": "WAITING_FOR_BREAKOUT"
-      },
-      "breakout": {
-        "direction": "long",
-        "trigger": 76659.5,
-        "currentPrice": 76618.5,
-        "passed": false
-      }
-    },
-    {
-      "candleTime": 1788349320,
-      "loggedAt": "2026-09-02T11:43:02.597Z",
-      "candle": {
-        "open": 76652.5,
-        "high": 76671.9,
-        "low": 76642,
-        "close": 76655
-      },
-      "price": {
-        "source": "last",
-        "candleSource": "traded_price",
-        "strategy": 76646,
-        "mark": 76655.95519942,
-        "last": 76646,
-        "spot": 76675.3
-      },
-      "ema": {
-        "current": 76598.361881763,
-        "previous": 76594.92628575553,
+        "current": 76857.0885842431,
+        "previous": 76843.40786544587,
         "lookback": 3,
         "direction": "UP"
       },
@@ -368,25 +153,25 @@
       }
     },
     {
-      "candleTime": 1788349260,
-      "loggedAt": "2026-09-02T11:42:02.697Z",
+      "candleTime": 1788357300,
+      "loggedAt": "2026-09-02T13:56:02.805Z",
       "candle": {
-        "open": 76635,
-        "high": 76673,
-        "low": 76634.5,
-        "close": 76664.5
+        "open": 77099.5,
+        "high": 77111,
+        "low": 76971,
+        "close": 77013
       },
       "price": {
         "source": "last",
         "candleSource": "traded_price",
-        "strategy": 76664.5,
-        "mark": 76657.82647652,
-        "last": 76664.5,
-        "spot": 76676.4
+        "strategy": 77012.5,
+        "mark": 77007.10518988,
+        "last": 77012.5,
+        "spot": 77039
       },
       "ema": {
-        "current": 76597.2176773276,
-        "previous": 76593.05610968196,
+        "current": 76851.73683849206,
+        "previous": 76836.54741830633,
         "lookback": 3,
         "direction": "UP"
       },
@@ -418,25 +203,25 @@
       }
     },
     {
-      "candleTime": 1788349200,
-      "loggedAt": "2026-09-02T11:41:03.067Z",
+      "candleTime": 1788357240,
+      "loggedAt": "2026-09-02T13:55:02.330Z",
       "candle": {
-        "open": 76681.5,
-        "high": 76692,
-        "low": 76642,
-        "close": 76642
+        "open": 77153,
+        "high": 77153,
+        "low": 77082,
+        "close": 77099.5
       },
       "price": {
         "source": "last",
         "candleSource": "traded_price",
-        "strategy": 76642,
-        "mark": 76637.89168294,
-        "last": 76642,
-        "spot": 76658.2
+        "strategy": 77103,
+        "mark": 77091.58463328,
+        "last": 77103,
+        "spot": 77125
       },
       "ema": {
-        "current": 76595.85843844336,
-        "previous": 76591.46128356997,
+        "current": 76848.47899687152,
+        "previous": 76828.63928537053,
         "lookback": 3,
         "direction": "UP"
       },
@@ -468,25 +253,275 @@
       }
     },
     {
-      "candleTime": 1788349140,
-      "loggedAt": "2026-09-02T11:40:54.653Z",
+      "candleTime": 1788357180,
+      "loggedAt": "2026-09-02T13:54:03.107Z",
       "candle": {
-        "open": 76667,
-        "high": 76716.5,
-        "low": 76667,
-        "close": 76687.5
+        "open": 77213,
+        "high": 77230.5,
+        "low": 77161,
+        "close": 77183
       },
       "price": {
         "source": "last",
         "candleSource": "traded_price",
-        "strategy": 76649.5,
-        "mark": 76654.87002186,
-        "last": 76649.5,
-        "spot": 76672.3
+        "strategy": 77183,
+        "mark": 77153.33803708,
+        "last": 77183,
+        "spot": 77182.8
       },
       "ema": {
-        "current": 76594.9262856135,
-        "previous": 76590.94534982917,
+        "current": 76843.40786552097,
+        "previous": 76823.66230126396,
+        "lookback": 3,
+        "direction": "UP"
+      },
+      "buy": {
+        "slope": true,
+        "patternA": false,
+        "patternB": false,
+        "setup": false
+      },
+      "sell": {
+        "slope": false,
+        "patternA": false,
+        "patternB": false,
+        "setup": false
+      },
+      "setup": null,
+      "pending": null,
+      "account": {
+        "equity": 100,
+        "available": 100,
+        "riskBase": "available",
+        "riskPct": 1,
+        "positionSize": 0,
+        "lossStreak": 0
+      },
+      "decision": {
+        "action": "WAIT",
+        "reason": "NO_VALID_SETUP"
+      }
+    },
+    {
+      "candleTime": 1788357120,
+      "loggedAt": "2026-09-02T13:53:03.347Z",
+      "candle": {
+        "open": 77103.5,
+        "high": 77268,
+        "low": 77103.5,
+        "close": 77228
+      },
+      "price": {
+        "source": "last",
+        "candleSource": "traded_price",
+        "strategy": 77228,
+        "mark": 77221.6334587,
+        "last": 77228,
+        "spot": 77248
+      },
+      "ema": {
+        "current": 76836.54741837671,
+        "previous": 76817.76659019636,
+        "lookback": 3,
+        "direction": "UP"
+      },
+      "buy": {
+        "slope": true,
+        "patternA": false,
+        "patternB": false,
+        "setup": false
+      },
+      "sell": {
+        "slope": false,
+        "patternA": false,
+        "patternB": false,
+        "setup": false
+      },
+      "setup": null,
+      "pending": null,
+      "account": {
+        "equity": 100,
+        "available": 100,
+        "riskBase": "available",
+        "riskPct": 1,
+        "positionSize": 0,
+        "lossStreak": 0
+      },
+      "decision": {
+        "action": "WAIT",
+        "reason": "NO_VALID_SETUP"
+      }
+    },
+    {
+      "candleTime": 1788357060,
+      "loggedAt": "2026-09-02T13:52:03.522Z",
+      "candle": {
+        "open": 77126.5,
+        "high": 77138.5,
+        "low": 77075,
+        "close": 77075
+      },
+      "price": {
+        "source": "last",
+        "candleSource": "traded_price",
+        "strategy": 77077,
+        "mark": 77072.83422176,
+        "last": 77077,
+        "spot": 77102.3
+      },
+      "ema": {
+        "current": 76828.63928543625,
+        "previous": 76812.39823850612,
+        "lookback": 3,
+        "direction": "UP"
+      },
+      "buy": {
+        "slope": true,
+        "patternA": false,
+        "patternB": false,
+        "setup": false
+      },
+      "sell": {
+        "slope": false,
+        "patternA": false,
+        "patternB": false,
+        "setup": false
+      },
+      "setup": null,
+      "pending": null,
+      "account": {
+        "equity": 100,
+        "available": 100,
+        "riskBase": "available",
+        "riskPct": 1,
+        "positionSize": 0,
+        "lossStreak": 0
+      },
+      "decision": {
+        "action": "WAIT",
+        "reason": "NO_VALID_SETUP"
+      }
+    },
+    {
+      "candleTime": 1788357000,
+      "loggedAt": "2026-09-02T13:51:03.182Z",
+      "candle": {
+        "open": 77073.5,
+        "high": 77121.5,
+        "low": 77073.5,
+        "close": 77115.5
+      },
+      "price": {
+        "source": "last",
+        "candleSource": "traded_price",
+        "strategy": 77115.5,
+        "mark": 77107.03815447,
+        "last": 77115.5,
+        "spot": 77121.9
+      },
+      "ema": {
+        "current": 76823.6623013276,
+        "previous": 76805.2850716327,
+        "lookback": 3,
+        "direction": "UP"
+      },
+      "buy": {
+        "slope": true,
+        "patternA": false,
+        "patternB": false,
+        "setup": false
+      },
+      "sell": {
+        "slope": false,
+        "patternA": false,
+        "patternB": false,
+        "setup": false
+      },
+      "setup": null,
+      "pending": null,
+      "account": {
+        "equity": 100,
+        "available": 100,
+        "riskBase": "available",
+        "riskPct": 1,
+        "positionSize": 0,
+        "lossStreak": 0
+      },
+      "decision": {
+        "action": "WAIT",
+        "reason": "NO_VALID_SETUP"
+      }
+    },
+    {
+      "candleTime": 1788356940,
+      "loggedAt": "2026-09-02T13:50:02.922Z",
+      "candle": {
+        "open": 77163,
+        "high": 77172,
+        "low": 77073,
+        "close": 77083.5
+      },
+      "price": {
+        "source": "last",
+        "candleSource": "traded_price",
+        "strategy": 77073.5,
+        "mark": 77068.72222142,
+        "last": 77073.5,
+        "spot": 77101.2
+      },
+      "ema": {
+        "current": 76817.76659026771,
+        "previous": 76797.96759835826,
+        "lookback": 3,
+        "direction": "UP"
+      },
+      "buy": {
+        "slope": true,
+        "patternA": false,
+        "patternB": false,
+        "setup": false
+      },
+      "sell": {
+        "slope": false,
+        "patternA": false,
+        "patternB": false,
+        "setup": false
+      },
+      "setup": null,
+      "pending": null,
+      "account": {
+        "equity": 100,
+        "available": 100,
+        "riskBase": "available",
+        "riskPct": 1,
+        "positionSize": 0,
+        "lossStreak": 0
+      },
+      "decision": {
+        "action": "WAIT",
+        "reason": "NO_VALID_SETUP"
+      }
+    },
+    {
+      "candleTime": 1788356880,
+      "loggedAt": "2026-09-02T13:49:31.101Z",
+      "candle": {
+        "open": 77177.5,
+        "high": 77242,
+        "low": 77164.5,
+        "close": 77164.5
+      },
+      "price": {
+        "source": "last",
+        "candleSource": "traded_price",
+        "strategy": 77121.5,
+        "mark": 77115.4636371,
+        "last": 77121.5,
+        "spot": 77145.1
+      },
+      "ema": {
+        "current": 76812.39823858328,
+        "previous": 76789.14876199048,
         "lookback": 3,
         "direction": "UP"
       },
