@@ -1,6 +1,6 @@
 import { applyRuntimeConfigOverrides, config, configurePortfolioRuntime } from './lib/config';
 import { emaSeries, evaluateSetup } from './lib/strategy';
-import { deltaErrorDetails,getCandles, getProduct, getTicker, getWallet, getPosition, getOpenOrders, getFillsBounded, getOrderHistoryBounded, toDeltaMicroseconds, placeMarketOrder, placeBracket, placeProtectiveStopOrder, setLeverage } from './lib/delta';
+import { DeltaRequestError,deltaErrorDetails,getCandles, getProduct, getTicker, getWallet, getPosition, getOpenOrders, getFillsBounded, getOrderHistoryBounded, toDeltaMicroseconds, placeMarketOrder, placeBracket, placeProtectiveStopOrder, setLeverage } from './lib/delta';
 import { readControl, writeStatus } from './lib/state';
 import { persistClosedTrade as persistClosedTradeBase, persistOpenBotTrade as persistOpenBotTradeBase, persistOpenManualTrade as persistOpenManualTradeBase } from './lib/trades/persistence';
 import { findLegacyUnresolvedTrades,findOpenBotTrade as findOpenBotTradeBase, findOpenManualTrades as findOpenManualTradesBase, findUnresolvedBotTrades as findUnresolvedBotTradesBase, findUnresolvedManualTrades as findUnresolvedManualTradesBase, markTradeReconciling,synchronizeTradeProtection,updateTradeProtectionState } from './lib/trades/repository';
@@ -459,7 +459,6 @@ async function refreshCandlesIfNeeded(nowSec:number) {
 }
 
 async function cycle() {
-  if(!config.apiKey||!config.apiSecret)throw new Error('Credentials Not Configured');
   // The dashboard control is the master switch for NEW algo entries.
   // Monitoring stays alive even when the robot is stopped so an already-open
   // Delta position, its SL/TP and its eventual close continue to update on UI.
@@ -471,8 +470,6 @@ async function cycle() {
   if (!product || product.state !== 'live' || product.trading_status !== 'operational') {
     throw new Error(`Product ${config.symbol} is not operational`);
   }
-  try{await reconcileEntryIntents();}catch{blockingEntryIntent={state:'AMBIGUOUS',intentId:null,clientOrderId:null,status:'ENTRY_INTENT_LOOKUP_FAILED'};}
-
   // Fast path: ticker is fetched every POLL_MS so breakout detection remains fast.
   const ticker = await getTicker(config.symbol);
   const lastTradedPrice = Number(ticker.close ?? 0);
@@ -486,13 +483,18 @@ async function cycle() {
 
   const nowSec = Math.floor(Date.now()/1000);
   const day = tradingDayKey();
-  if(pendingDailyLossEvents.size)await retryPendingDailyLossEvents();
-  if(!pendingDailyLossEvents.size&&(day !== currentDay||!dailyLossStateReady)) await restoreCurrentDailyLossStreak();
+  let privateAccountError:unknown=null;
+  try{
+    if(!config.apiKey||!config.apiSecret)throw new DeltaRequestError('DELTA_AUTH_ERROR');
+    try{await reconcileEntryIntents();}catch{blockingEntryIntent={state:'AMBIGUOUS',intentId:null,clientOrderId:null,status:'ENTRY_INTENT_LOOKUP_FAILED'};}
+    if(pendingDailyLossEvents.size)await retryPendingDailyLossEvents();
+    if(!pendingDailyLossEvents.size&&(day !== currentDay||!dailyLossStateReady)) await restoreCurrentDailyLossStreak();
 
-  // Slower data is refreshed independently from the 1-second breakout check.
-  await refreshPosition(lastPrice);
-  await syncExchangeBracket();
-  await refreshWallet();
+    // Slower account data is refreshed independently from the 1-second breakout check.
+    await refreshPosition(lastPrice);
+    await syncExchangeBracket();
+    await refreshWallet();
+  }catch(error){privateAccountError=error;}
   const candlesChanged = await refreshCandlesIfNeeded(nowSec);
 
   const latest = completedCandles[completedCandles.length - 1];
@@ -549,7 +551,7 @@ async function cycle() {
       pending = null;
     }
 
-    if (dailyLossStateReady && strategyStateReady && tradingEnabled && positionSize === 0 && lossStreak < config.maxDailyLosses && dailyLossEntryAllowed(dailyLossStateReady,lossStreak,config.maxDailyLosses) && !pending) {
+    if (!privateAccountError && dailyLossStateReady && strategyStateReady && tradingEnabled && positionSize === 0 && lossStreak < config.maxDailyLosses && dailyLossEntryAllowed(dailyLossStateReady,lossStreak,config.maxDailyLosses) && !pending) {
       if (s) pending = {...s,validCandles:config.entryValidCandles,expiresAfterCandleTime:s.candleTime+config.entryValidCandles*config.resolutionSec,configRevision};
     }
 
@@ -582,6 +584,10 @@ async function cycle() {
       decision:candleDecision
     });
   }
+
+  // Public observation is allowed during a private outage, but execution remains
+  // fail-closed and the existing outer error boundary keeps account status unhealthy.
+  if(privateAccountError)throw privateAccountError;
 
   if (dailyLossStateReady && strategyStateReady && tradingEnabled && !blockingEntryIntent && pending && pending.configRevision===configRevision && positionSize === 0 && lossStreak < config.maxDailyLosses && dailyLossEntryAllowed(dailyLossStateReady,lossStreak,config.maxDailyLosses)) {
     const entryConfigRevision=pending.configRevision;
