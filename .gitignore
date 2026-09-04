@@ -10,3 +10,4 @@ data/supervisor-health.json.*.tmp
 # Generated portfolio runtime state
 data/status-*.json
 data/control-*.json
+data/activity-*.json
