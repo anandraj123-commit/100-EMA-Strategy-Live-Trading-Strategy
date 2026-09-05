@@ -74,6 +74,8 @@ The password prompt is hidden. The password must be at least 14 characters. The 
 
 Sessions expire after eight hours. Login throttling uses atomic MongoDB counters with a 15-minute TTL, so it applies across multiple web instances. Account throttling is always active. Source-IP and source-plus-account throttling are enabled only when `TRUST_PROXY_IP_HEADERS=true`. Set that option only behind a trusted hosting proxy that overwrites (rather than accepts or appends arbitrary client input to) `X-Forwarded-For`/`X-Real-IP`; leave it false when that guarantee is unavailable.
 
+On Railway, CSRF origin validation uses `X-Forwarded-Proto` and `X-Forwarded-Host`, requiring HTTPS and an exact match with Railway’s `RAILWAY_PUBLIC_DOMAIN`. For this production service, that domain must be `trading-platform-production-4df3.up.railway.app` (without a scheme or path). Outside Railway, validation continues using the request URL origin. Session authentication and CSRF proof validation remain required.
+
 The default test suite never connects to a production database. To run the opt-in authentication integration suite, provide `AUTH_TEST_MONGODB_URI` for a dedicated disposable MongoDB test deployment. The suite creates and drops a uniquely named database:
 
 ```bash
