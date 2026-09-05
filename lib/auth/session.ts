@@ -93,9 +93,21 @@ export function getCsrfToken(sessionToken: string) {
   return csrfForToken(sessionToken);
 }
 
+function effectiveRequestOrigin(req: NextRequest): string | null {
+  const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN;
+  if (!railwayDomain) return req.nextUrl.origin;
+
+  // Only trust Railway proxy headers when they match its configured public domain.
+  // Exact checks also reject ambiguous multi-value headers and HTTPS downgrades.
+  const proto = req.headers.get('x-forwarded-proto') ?? req.nextUrl.protocol.slice(0, -1);
+  const host = req.headers.get('x-forwarded-host') ?? req.headers.get('host') ?? req.nextUrl.host;
+  if (proto !== 'https' || host !== railwayDomain) return null;
+  return `${proto}://${host}`;
+}
+
 export function verifyCsrf(req: NextRequest, sessionToken: string) {
   const origin = req.headers.get('origin');
-  if (!origin || origin !== req.nextUrl.origin) return false;
+  if (!origin || origin !== effectiveRequestOrigin(req)) return false;
   const supplied = req.headers.get('x-csrf-token');
   if (!supplied) return false;
   const expected = csrfForToken(sessionToken);
