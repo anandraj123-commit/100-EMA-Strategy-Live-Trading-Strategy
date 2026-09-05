@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { DeltaRequestError, getOpenOrders } from '../lib/delta';
 import { inspectProtectionForSync, planProtectionSync, protectionTriggerMethod, protectionTriggerPrice, type ProtectionExpectation } from '../lib/trades/protection';
-import { reconcileProtection, type ProtectionDependencies, type ProtectionTrade } from '../lib/trades/protection-reconciliation';
+import { protectionPositionFailure, protectionPositionMatches, reconcileProtection, type ProtectionDependencies, type ProtectionTrade } from '../lib/trades/protection-reconciliation';
 
 const expected = (direction: 'long' | 'short' = 'long'): ProtectionExpectation => ({
   productId:27, direction, contracts:117, sl:direction === 'long' ? 90 : 110,
@@ -233,4 +233,88 @@ test('truncated order row cannot be mistaken for an empty protection snapshot',a
   const h=harness(); h.setRows([{product_id:27}]); await h.run();
   assert.equal(h.submissions.length,0); assert.equal(h.trade.protectionState,'REPAIR_REQUIRED');
   assert.equal(h.trade.exchangeSync.status,'UNVERIFIABLE');
+});
+
+
+for (const direction of ['long','short'] as const) {
+  test(`lightweight ${direction} position without product_id passes in contract units`,()=>{
+    const e=expected(direction), position={size:direction==='short'?-117:117,entry_price:'4432.45'};
+    assert.equal(protectionPositionMatches(position,e),true);
+    assert.equal(protectionPositionFailure(position,e),null);
+    assert.equal(protectionPositionMatches({...position,product_id:e.productId},e),true);
+    assert.equal(protectionPositionMatches({...position,product_id:String(e.productId)},e),true);
+  });
+  test(`repeated ${direction} lightweight responses reach strict order inspection without false repair`,async()=>{
+    const h=harness(direction); h.setPosition({size:direction==='short'?-117:117,entry_price:'4432.45'});
+    let lookups=0; h.deps.orders=async()=>{lookups++;return pair(h.e);};
+    for(let cycle=0;cycle<4;cycle++)await h.run();
+    assert.equal(lookups,4); assert.equal(h.trade.protectionState,'ACTIVE');
+    assert.equal(h.trade.exchangeSync.status,'VALID'); assert.equal(h.submissions.length,0);
+    assert.equal(h.events.some(event=>event.type==='PROTECTION_REPAIR_ABORTED'),false);
+  });
+}
+for (const productId of [28,null,undefined,'', 'wrong',true,{},[],Number.NaN,Number.POSITIVE_INFINITY,27.5]) {
+  test(`present invalid/conflicting product_id ${String(productId)} is rejected`,async()=>{
+    const h=harness('short'), position={product_id:productId,size:-117,entry_price:'4432.45'};
+    assert.equal(protectionPositionFailure(position,h.e),'POSITION_PRODUCT_MISMATCH');
+    assert.equal(protectionPositionMatches(position,h.e),false);
+    h.setPosition(position);let lookups=0;h.deps.orders=async()=>{lookups++;return pair(h.e);};
+    await h.run();assert.equal(lookups,0);assert.equal(h.submissions.length,0);
+    const event=h.events.find(event=>event.type==='PROTECTION_REPAIR_ABORTED');
+    assert.equal(event?.reason,'POSITION_PRODUCT_MISMATCH'); assert.equal(event?.stage,'POSITION_LOOKUP');
+  });
+}
+for (const [label,position,reason] of [
+  ['changed contracts',{size:-116},'POSITION_QUANTITY_CHANGED'],
+  ['underlying units',{size:-0.117},'POSITION_QUANTITY_CHANGED'],
+  ['wrong direction',{size:117},'POSITION_DIRECTION_CHANGED'],
+  ['flat',{size:0},'POSITION_MISSING_OR_INVALID'],
+  ['missing size',{},'POSITION_MISSING_OR_INVALID'],
+  ['null size',{size:null},'POSITION_MISSING_OR_INVALID'],
+  ['malformed size',{size:'invalid'},'POSITION_MISSING_OR_INVALID'],
+  ['boolean size',{size:true},'POSITION_MISSING_OR_INVALID'],
+  ['nonfinite size',{size:Infinity},'POSITION_MISSING_OR_INVALID'],
+  ['null position',null,'POSITION_MISSING_OR_INVALID'],
+] as const) {
+  test(`${label} remains rejected for a lightweight position`,async()=>{
+    const h=harness('short'); h.setPosition(position);
+    assert.equal(protectionPositionFailure(position,h.e),reason); await h.run();
+    assert.equal(h.submissions.length,0);
+    assert.equal(h.events.find(event=>event.type==='PROTECTION_REPAIR_ABORTED')?.reason,reason);
+  });
+}
+test('invalid owned contracts remain rejected independently of position sign',async()=>{
+  for(const owned of [0,-117,null,'invalid',Infinity]) {
+    const h=harness('short');h.trade.ownedContracts=owned;h.trade.contracts=owned;
+    h.setPosition({size:-117});await h.run();assert.equal(h.submissions.length,0);
+    assert.equal(h.events.find(event=>event.type==='PROTECTION_REPAIR_ABORTED')?.reason,'OWNED_QUANTITY_CHANGED');
+  }
+});
+for (const failure of ['product','direction','quantity','owned','flat'] as const) {
+  test(`pre-repair ${failure} abort retains the precise reason and stage`,async()=>{
+    const h=harness('short');h.setRows([]);let calls=0;
+    h.deps.position=async()=>{
+      if(++calls===1)return {size:-117};
+      if(failure==='product')return {size:-117,product_id:28};
+      if(failure==='direction')return {size:117};
+      if(failure==='quantity')return {size:-116};
+      if(failure==='flat')return {size:0};
+      h.trade.ownedContracts=116;return {size:-117};
+    };
+    await h.run();assert.equal(h.submissions.length,0);
+    const event=h.events.find(event=>event.type==='PROTECTION_REPAIR_ABORTED');
+    assert.equal(event?.stage,'PRE_REPAIR_POSITION_CHECK');
+    assert.equal(event?.reason,{product:'POSITION_PRODUCT_MISMATCH',direction:'POSITION_DIRECTION_CHANGED',quantity:'POSITION_QUANTITY_CHANGED',owned:'OWNED_QUANTITY_CHANGED',flat:'POSITION_MISSING_OR_INVALID'}[failure]);
+  });
+}
+test('absent position ID never bypasses hardened protection metadata validation',async()=>{
+  const h=harness('short');h.setPosition({size:-117});
+  h.setRows([order('sl',h.e,{reduce_only:false}),order('tp',h.e)]);
+  await h.run();assert.equal(h.submissions.length,0);assert.equal(h.trade.protectionState,'REPAIR_REQUIRED');
+  assert.ok(h.events.some(event=>event.type==='PROTECTION_VERIFICATION_FAILED'));
+});
+test('lightweight position responses preserve guarded repair and post-repair verification',async()=>{
+  const h=harness('short');h.setPosition({size:-117});h.setRows([order('tp',h.e)]);
+  await h.run();assert.equal(h.submissions.length,1);assert.equal(h.submissions[0].leg,'sl');
+  assert.equal(h.trade.protectionState,'ACTIVE');assert.equal(h.trade.exchangeSync.status,'VALID');
 });
