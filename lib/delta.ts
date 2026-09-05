@@ -115,8 +115,38 @@ export async function getPosition(productId: number) {
   return (await privateRequest('GET', '/v2/positions', { product_id: productId })).result;
 }
 
-export async function getOpenOrders(productId: number) {
-  return (await privateRequest('GET', '/v2/orders', { product_id: productId, state: 'open' })).result || [];
+// Protection needs a complete active-order snapshot, including pending stop orders.
+// https://docs.delta.exchange/#get-active-orders documents plural filters and cursors.
+export async function getOpenOrders(productId: number, request: typeof privateRequest = privateRequest) {
+  const orders: any[] = [], cursors = new Set<string>(), ids = new Set<string>();
+  let after: string | undefined;
+  for (let page = 0; page < 10; page += 1) {
+    const response = await request('GET', '/v2/orders', { product_ids: String(productId), states: 'open,pending', page_size: 100, after });
+    const next = response?.meta?.after;
+    if (response?.success !== true || !Array.isArray(response.result) || !response.meta ||
+        !Object.prototype.hasOwnProperty.call(response.meta, 'after') ||
+        !(next === null || (typeof next === 'string' && next.length > 0))) {
+      throw new DeltaRequestError('DELTA_INVALID_RESPONSE');
+    }
+    for (const order of response.result) {
+      if (!order || typeof order !== 'object' || Array.isArray(order) ||
+          !['string','number'].includes(typeof order.product_id) || Number(order.product_id) !== productId) {
+        throw new DeltaRequestError('DELTA_INVALID_RESPONSE');
+      }
+      // Overlapping pages are not a coherent snapshot; retry rather than repair.
+      if (order.id != null) {
+        const id = String(order.id);
+        if (ids.has(id)) throw new DeltaRequestError('DELTA_INVALID_RESPONSE');
+        ids.add(id);
+      }
+      orders.push(order);
+    }
+    if (next === null) return orders;
+    if (cursors.has(next)) throw new DeltaRequestError('DELTA_INVALID_RESPONSE');
+    cursors.add(next);
+    after = next;
+  }
+  throw new DeltaRequestError('DELTA_INVALID_RESPONSE');
 }
 
 export async function getOrderByClientOrderId(clientOrderId:string){return (await privateRequest('GET',`/v2/orders/client_order_id/${encodeURIComponent(clientOrderId)}`)).result;}

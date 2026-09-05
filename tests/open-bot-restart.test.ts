@@ -30,11 +30,8 @@ test('OPEN BOT persistence stores every immutable restart input',async()=>{
 });
 
 test('protection repair remains driven by restored activeTrade prices, not current RR or risk settings',()=>{
-  const worker=fs.readFileSync(path.join(process.cwd(),'worker.ts'),'utf8');
-  const start=worker.indexOf('async function syncExchangeBracket');
-  const end=worker.indexOf('const sleep=',start);
-  const repair=worker.slice(start,end);
-  assert.match(repair,/intendedSl=numeric\(activeTrade\.sl\)/);
-  assert.match(repair,/intendedTp=numeric\(activeTrade\.tp\)/);
+  const repair=fs.readFileSync(path.join(process.cwd(),'lib/trades/protection-reconciliation.ts'),'utf8');
+  assert.match(repair,/sl: protectionNumber\(trade.sl\)/);
+  assert.match(repair,/tp: protectionNumber\(trade.tp\)/);
   assert.doesNotMatch(repair,/config\.rr|config\.riskPct|evaluateSetup/);
 });

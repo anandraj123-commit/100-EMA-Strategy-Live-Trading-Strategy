@@ -19,7 +19,8 @@ import { pendingSetupExpired } from './lib/pending';
 import { entryClientOrderId,entryIntentId } from './lib/entry-intents/identity';
 import { findBlockingEntryIntent,findRecoverableConfirmedEntryIntents,markEntryIntentOwnershipPersisted } from './lib/entry-intents/repository';
 import { EntryNotTransmittedError,reconcilePortfolioEntryIntents,submitPreparedEntryIntent } from './lib/entry-intents/service';
-import { inspectProtectionForSync,planProtectionSync,protectiveClientOrderId } from './lib/trades/protection';
+import { protectionTriggerMethod,protectionTriggerPrice } from './lib/trades/protection';
+import { reconcileProtection } from './lib/trades/protection-reconciliation';
 import { finalPreOrderSafetyCheck } from './lib/runtime/final-preorder';
 import { dailyLossEntryAllowed,recordDailyLossEvent,restoreDailyLossStreak,tradingDayKey,type DailyLossScope } from './lib/risk/daily-loss-streak';
 import { restoreOpenBotTrade } from './lib/trades/open-bot-restoration';
@@ -78,7 +79,7 @@ let lastStaleReconciliationAt = 0;
 let lastManualReconciliationAt = 0;
 let lastAttributionRetryAt = 0;
 let lastManualLifecycleSyncAt = 0;
-let lastProtectionRepairAt = 0;
+const protectionRepairAttempts = new Set<string>();
 
 const POSITION_REFRESH_MS = 5_000;
 const WALLET_REFRESH_MS = 30_000;
@@ -234,35 +235,28 @@ async function syncExchangeBracket(force = false) {
   lastBracketSyncAt = now;
   const confirmed=(activeTrade.source==='bot'&&activeTrade.attributionStatus==='BOT_CONFIRMED')||(activeTrade.source==='exchange_existing'&&activeTrade.attributionStatus==='MANUAL_CONFIRMED');
   if(!confirmed||!activeTrade.tradeId||activeTrade.mixedPosition===true)return;
-  try{
+  const ownership = async () => {
     if(activeTrade.source==='exchange_existing'){
       const [openBot,openManuals]=await Promise.all([findOpenBotTrade(Number(product.id),portfolioId),findOpenManualTrades(Number(product.id),portfolioId)]);
-      if(openBot||openManuals.length!==1||openManuals[0]?.tradeId!==activeTrade.tradeId){addTradeEvent('PROTECTION_RECONCILIATION_AMBIGUOUS',{tradeId:activeTrade.tradeId,source:activeTrade.source,reason:'MULTIPLE_OR_MIXED_OPEN_LIFECYCLES'});return;}
+      if(openBot||openManuals.length!==1||openManuals[0]?.tradeId!==activeTrade.tradeId){addTradeEvent('PROTECTION_RECONCILIATION_AMBIGUOUS',{tradeId:activeTrade.tradeId,source:activeTrade.source,reason:'MULTIPLE_OR_MIXED_OPEN_LIFECYCLES'});return false;}
     }
-    const position=await getPosition(Number(product.id)),positionSize=Number(position?.size||0),owned=Math.abs(Number(activeTrade.ownedContracts??activeTrade.contracts??0));
-    if(positionSize===0||owned<=0||Math.abs(owned-Math.abs(positionSize))>1e-9)return;
-    const side=activeTrade.direction==='long'?'sell':'buy',orders=await getOpenOrders(Number(product.id)),inspection=inspectProtectionForSync(orders,Number(product.id),side);
-    if(inspection.status==='AMBIGUOUS'){activeTrade.protectionState='REPAIR_REQUIRED';await synchronizeTradeProtection(activeTrade.tradeId,{state:'REPAIR_REQUIRED'});addTradeEvent('PROTECTION_RECONCILIATION_AMBIGUOUS',{tradeId:activeTrade.tradeId,source:activeTrade.source});return;}
-    const oldSl=numeric(activeTrade.sl),oldTp=numeric(activeTrade.tp),plan=planProtectionSync(inspection,oldSl,oldTp);
-    if(plan.updates.sl!==undefined){activeTrade.sl=plan.updates.sl;addTradeEvent('SL_SYNCED_FROM_EXCHANGE',{tradeId:activeTrade.tradeId,oldValue:oldSl,newValue:plan.updates.sl});}
-    if(plan.updates.tp!==undefined){activeTrade.tp=plan.updates.tp;addTradeEvent('TP_SYNCED_FROM_EXCHANGE',{tradeId:activeTrade.tradeId,oldValue:oldTp,newValue:plan.updates.tp});}
-    if(Object.keys(plan.updates).length)await synchronizeTradeProtection(activeTrade.tradeId,{...plan.updates,slOrderId:inspection.slOrderId,tpOrderId:inspection.tpOrderId});
-    const intendedSl=numeric(activeTrade.sl),intendedTp=numeric(activeTrade.tp);
-    if(plan.repair.length){
-      activeTrade.protectionState='REPAIR_REQUIRED';await synchronizeTradeProtection(activeTrade.tradeId,{state:'REPAIR_REQUIRED'});
-      for(const leg of plan.repair)addTradeEvent(leg==='sl'?'SL_REMOVED_ON_EXCHANGE':'TP_REMOVED_ON_EXCHANGE',{tradeId:activeTrade.tradeId});
-      if(Date.now()-lastProtectionRepairAt>=BRACKET_SYNC_MS){
-        lastProtectionRepairAt=Date.now();addTradeEvent('PROTECTION_REPAIR_ATTEMPT',{tradeId:activeTrade.tradeId,missing:plan.repair});
-        const freshPosition=await getPosition(Number(product.id));if(Number(freshPosition?.size||0)===0)return;
-        const triggerMethod=config.priceSource==='mark'?'mark_price':config.priceSource==='spot'?'spot_price':'last_traded_price';
-        if(plan.repair.length===2&&intendedSl!=null&&intendedTp!=null)await placeBracket(Number(product.id),intendedSl,intendedTp,triggerMethod);
-        else for(const leg of plan.repair){const price=leg==='sl'?intendedSl:intendedTp;if(price==null)continue;const kind=leg==='sl'?'stop_loss_order':'take_profit_order',identity=activeTrade.entryIntentId??activeTrade.clientOrderId??activeTrade.tradeId;await placeProtectiveStopOrder(Number(product.id),side,owned,kind,price,triggerMethod,protectiveClientOrderId(String(identity),leg));}
-        const verified=inspectProtectionForSync(await getOpenOrders(Number(product.id)),Number(product.id),side),remaining=planProtectionSync(verified,intendedSl,intendedTp);
-        if(verified.status==='KNOWN'&&!remaining.repair.length&&!Object.keys(remaining.updates).length){activeTrade.protectionState='ACTIVE';await synchronizeTradeProtection(activeTrade.tradeId,{state:'ACTIVE',slOrderId:verified.slOrderId,tpOrderId:verified.tpOrderId});addTradeEvent('PROTECTION_REPAIRED',{tradeId:activeTrade.tradeId,sl:intendedSl,tp:intendedTp});}
-      }
-    }else if(intendedSl!=null||intendedTp!=null){activeTrade.protectionState='ACTIVE';await synchronizeTradeProtection(activeTrade.tradeId,{state:'ACTIVE',slOrderId:inspection.slOrderId,tpOrderId:inspection.tpOrderId});}
-    activeTrade.exchangeSync={at:new Date().toISOString(),sl:inspection.sl,tp:inspection.tp};
-  }catch(error){const detail=deltaErrorDetails(error);if(activeTrade?.tradeId)addTradeEvent('PROTECTION_RECONCILIATION_FAILED',{tradeId:activeTrade.tradeId,code:detail.code,message:detail.message});}
+    return true;
+  };
+  const triggerMethod = protectionTriggerMethod(config.priceSource);
+  await reconcileProtection(Number(product.id), triggerMethod, {
+    trade: () => activeTrade,
+    position: () => getPosition(Number(product.id)),
+    orders: () => getOpenOrders(Number(product.id)),
+    triggerPrice: async () => protectionTriggerPrice(await getTicker(config.symbol), triggerMethod),
+    ownership,
+    persist: synchronizeTradeProtection,
+    bracket: (sl, tp) => placeBracket(Number(product.id), sl, tp, triggerMethod),
+    stop: (side, size, leg, price, clientOrderId) => placeProtectiveStopOrder(Number(product.id), side, size,
+      leg === 'sl' ? 'stop_loss_order' : 'take_profit_order', price, triggerMethod, clientOrderId),
+    event: addTradeEvent,
+    repairAttempts: protectionRepairAttempts,
+    now: Date.now,
+  });
 }
 
 const sleep=(ms:number)=>new Promise(r=>setTimeout(r,ms));
