@@ -37,8 +37,7 @@ console.log('[config] DELTA_ENV:', process.env.DELTA_ENV || 'demo');
 console.log('[config] API KEY LOADED:', Boolean(apiKey));
 console.log('[config] API SECRET LOADED:', Boolean(apiSecret));
 
-const resolutionRaw = (process.env.RESOLUTION || '').trim();
-if (!resolutionRaw) throw new Error('RESOLUTION is required in .env.local (for example 1m, 5m, 15m, 1h).');
+const resolutionRaw = (process.env.RESOLUTION || '5m').trim();
 const resolution = resolutionRaw.toLowerCase();
 const resolutionSec = resolutionToSeconds(resolution);
 const entryValidCandlesRaw = Number(process.env.ENTRY_VALID_CANDLES || 2);

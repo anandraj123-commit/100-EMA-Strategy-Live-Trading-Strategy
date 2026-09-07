@@ -24,11 +24,11 @@ export function evaluateSetup(candles:Candle[], emaLen:number, slopeLookback:num
   const trendUp = e > prev;
   const trendDown = e < prev;
   const buyPatternA = c.open < e && c.close > e;
-  const buyPatternB = c.open > e && c.close > e && c.low < e;
+  const buyPatternB = c.open > e && c.close > e && c.low <= e;
   const sellPatternA = c.open > e && c.close < e;
-  const sellPatternB = c.open < e && c.close < e && c.high > e;
+  const sellPatternB = c.open < e && c.close < e && c.high >= e;
 
-  // IMPORTANT: mirror the backtester exactly.
+  // Protected trading strategy contract: see AGENTS.md and tests/strategy-regression.
   // BUY  -> entry trigger = SIGNAL candle HIGH, SL = SIGNAL candle LOW.
   // SELL -> entry trigger = SIGNAL candle LOW,  SL = SIGNAL candle HIGH.
   // The later breakout candle never changes the stored SL.

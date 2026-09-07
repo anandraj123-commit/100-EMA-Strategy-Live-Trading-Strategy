@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { autoTradeStatus, calculateCurrentPnL, effectiveAutoTrade, paginateItems } from '../lib/dashboard';
+import DecisionLogRow from './DecisionLogRow';
 
 const tabs=['Environment Variables','Profit','History','Decision Log','Trade / Synchronisation Events','Pending Setup','Active Trade','Strategy / Guardrails','Latest Decision'] as const;
 
@@ -271,28 +272,9 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
 
       {activeTab==='Decision Log'&&<div className="panel">
         <h2>{s.strategy?.resolution ? `${s.strategy.resolution} Decision Log` : 'Decision Log'}</h2>
+        <p>Lifecycle stages use completed-candle identities. Live breakout prices are separate observations from completed-candle OHLC.</p>
         <ul className="decisionLog">
-          {pagedLogs.items.map((log: any) => (
-            <li key={log.candleTime}>
-              <div className="logHead">
-                <strong>{new Date(log.candleTime * 1000).toLocaleString()}</strong>
-                <span className={log.decision?.action === 'ENTRY' ? 'ok' : log.decision?.action === 'SKIP' ? 'bad' : 'wait'}>
-                  {displayStatus(log.decision?.action || 'WAIT', log.decision?.reason || '—')}
-                </span>
-              </div>
-              <div className="logGrid">
-                <span>OHLC: {log.candle?.open} / {log.candle?.high} / {log.candle?.low} / {log.candle?.close}</span>
-                <span>EMA: {log.ema?.current ?? '—'} | {log.ema?.lookback} bars ago: {log.ema?.previous ?? '—'} | {log.ema?.direction ?? '—'}</span>
-                <span>Feed: candles {log.price?.candleSource ?? 'traded_price'} | breakout {log.price?.source ?? s.priceSource ?? 'last'} | last {log.price?.last ?? '—'} | mark {log.price?.mark ?? '—'}</span>
-                <span>BUY: slope {log.buy?.slope ? 'PASS' : 'FAIL'}, A {log.buy?.patternA ? 'YES' : 'NO'}, B {log.buy?.patternB ? 'YES' : 'NO'}, setup {log.buy?.setup ? 'YES' : 'NO'}</span>
-                <span>SELL: slope {log.sell?.slope ? 'PASS' : 'FAIL'}, A {log.sell?.patternA ? 'YES' : 'NO'}, B {log.sell?.patternB ? 'YES' : 'NO'}, setup {log.sell?.setup ? 'YES' : 'NO'}</span>
-                {log.setup && <span>Setup: {log.setup.direction.toUpperCase()} | Trigger {log.setup.trigger} | SL {log.setup.sl}</span>}
-                {log.breakout && <span>Breakout: {log.breakout.passed ? 'YES' : 'NO'} | Price {log.breakout.currentPrice} | Trigger {log.breakout.trigger}</span>}
-                {log.risk && <span>Risk: ${Number(log.risk.riskAmount).toFixed(4)} | Contracts {log.risk.contracts} | TP {log.risk.tp} | Leverage {Number(log.risk.effectiveLeverage).toFixed(2)}x | Fee/Risk {Number(log.risk.feeRiskPct).toFixed(2)}%</span>}
-                {log.order && <span>Order: {log.order.side?.toUpperCase()} MARKET {log.order.market} | ID {log.order.orderId ?? '—'} | Bracket {log.order.bracket ?? '—'}</span>}
-              </div>
-            </li>
-          ))}
+          {pagedLogs.items.map((log:any)=><DecisionLogRow key={log.candleTime} log={log} priceSource={s.priceSource}/>)}
           {(!s.logs || s.logs.length === 0) && <li>No completed-candle log yet.</li>}
         </ul>
         <Pagination pagination={pagedLogs.pagination} onPage={setLogPage}/>

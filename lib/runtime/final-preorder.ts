@@ -1,6 +1,6 @@
-import { pendingSetupExpired } from '../pending';
+import { pendingEntryEligible, pendingSetupExpired } from '../pending';
 
-export type FinalPreOrderReason='FINAL_PREORDER_ROBOT_STOPPED'|'FINAL_PREORDER_AUTO_TRADE_OFF'|'FINAL_PREORDER_CONFIG_CHANGED'|'FINAL_PREORDER_PENDING_REPLACED'|'FINAL_PREORDER_PENDING_EXPIRED'|'FINAL_PREORDER_LEASE_LOST'|'FINAL_PREORDER_DELETION_IN_PROGRESS'|'FINAL_PREORDER_POSITION_NONZERO'|'FINAL_PREORDER_MARGIN_INVALID'|'FINAL_PREORDER_RISK_GUARD'|'FINAL_PREORDER_PORTFOLIO_MISMATCH';
+export type FinalPreOrderReason='FINAL_PREORDER_ROBOT_STOPPED'|'FINAL_PREORDER_AUTO_TRADE_OFF'|'FINAL_PREORDER_CONFIG_CHANGED'|'FINAL_PREORDER_PENDING_REPLACED'|'FINAL_PREORDER_PENDING_EXPIRED'|'FINAL_PREORDER_SIGNAL_CANDLE'|'FINAL_PREORDER_LEASE_LOST'|'FINAL_PREORDER_DELETION_IN_PROGRESS'|'FINAL_PREORDER_POSITION_NONZERO'|'FINAL_PREORDER_MARGIN_INVALID'|'FINAL_PREORDER_RISK_GUARD'|'FINAL_PREORDER_PORTFOLIO_MISMATCH';
 export type FinalPending={direction:'long'|'short';trigger:number;sl:number;candleTime:number;configRevision:string};
 export type FinalConfig={revision:string;autoTrade:boolean;entryValidCandles:number;resolutionSec:number;riskPct:number;rr:number;minStopPct:number;maxEffectiveLeverage:number;maxFeeRiskPct:number;gstPct:number};
 export type FinalIdentity={portfolioId:string;environment:'real'|'demo';symbol:string;productId:number};
@@ -19,7 +19,9 @@ export async function finalPreOrderSafetyCheck(input:FinalPreOrderInput,deps:Fin
   if(currentConfig.revision!==input.config.revision)return blocked('FINAL_PREORDER_CONFIG_CHANGED');
   const currentPending=deps.currentPending();
   if(!sameSetup(currentPending,input.setup))return blocked('FINAL_PREORDER_PENDING_REPLACED');
-  if(pendingSetupExpired(currentPending,deps.latestCompletedCandleTime(),currentConfig.entryValidCandles,currentConfig.resolutionSec))return blocked('FINAL_PREORDER_PENDING_EXPIRED');
+  const candleTime=deps.latestCompletedCandleTime();
+  if(pendingSetupExpired(currentPending,candleTime,currentConfig.entryValidCandles,currentConfig.resolutionSec))return blocked('FINAL_PREORDER_PENDING_EXPIRED');
+  if(!pendingEntryEligible(currentPending,candleTime,currentConfig.entryValidCandles,currentConfig.resolutionSec))return blocked('FINAL_PREORDER_SIGNAL_CANDLE');
   if(deps.leaseLost()||!await deps.leaseOwned())return blocked('FINAL_PREORDER_LEASE_LOST');
   if(!await deps.portfolioEntryAllowed())return blocked('FINAL_PREORDER_DELETION_IN_PROGRESS');
   const portfolio=await deps.portfolio();

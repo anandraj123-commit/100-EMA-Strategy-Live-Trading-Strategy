@@ -18,7 +18,7 @@ const dependencies=(candidate:FinalPreOrderInput=input):FinalPreOrderDependencie
   robotRunning:()=>true,
   refreshConfig:async()=>candidate.config,
   currentPending:()=>candidate.setup,
-  latestCompletedCandleTime:()=>1_059,
+  latestCompletedCandleTime:()=>1_060,
   leaseOwned:async()=>true,
   leaseLost:()=>false,
   portfolioEntryAllowed:async()=>true,
