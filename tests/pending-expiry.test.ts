@@ -6,8 +6,8 @@ import { pendingSetupExpired,type PendingSetup } from '../lib/pending';
 
 const setup=(direction:'long'|'short',candleTime=1_000):PendingSetup=>({direction,trigger:direction==='long'?110:90,sl:direction==='long'?90:110,candleTime});
 
-test('ENTRY_VALID_CANDLES=2 keeps Candle1 and Candle2 valid until the completed-Candle2 boundary',()=>{
-  const pending=setup('long'),resolutionSec=300,boundary=pending.candleTime+2*resolutionSec;
+test('ENTRY_VALID_CANDLES=2 keeps completed Candle1 and Candle2 eligible until the Candle3 boundary',()=>{
+  const pending=setup('long'),resolutionSec=300,boundary=pending.candleTime+3*resolutionSec;
   assert.equal(pendingSetupExpired(pending,pending.candleTime+resolutionSec,2,resolutionSec),false);
   assert.equal(pendingSetupExpired(pending,boundary-1,2,resolutionSec),false);
   assert.equal(pendingSetupExpired(pending,boundary,2,resolutionSec),true);
@@ -16,8 +16,8 @@ test('ENTRY_VALID_CANDLES=2 keeps Candle1 and Candle2 valid until the completed-
 test('BUY and SELL pending setups expire identically across resolutions',()=>{
   for(const direction of ['long','short'] as const)for(const resolutionSec of [60,300,900]){
     const pending=setup(direction);
-    assert.equal(pendingSetupExpired(pending,pending.candleTime+2*resolutionSec-1,2,resolutionSec),false);
-    assert.equal(pendingSetupExpired(pending,pending.candleTime+2*resolutionSec,2,resolutionSec),true);
+    assert.equal(pendingSetupExpired(pending,pending.candleTime+3*resolutionSec-1,2,resolutionSec),false);
+    assert.equal(pendingSetupExpired(pending,pending.candleTime+3*resolutionSec,2,resolutionSec),true);
   }
 });
 
@@ -28,7 +28,7 @@ test('AUTO_TRADE transitions neither pause expiry nor reset a valid pending setu
   autoTrade=true;
   assert.equal(autoTrade,true);
   assert.equal(pending.candleTime,originalCandleTime);
-  assert.equal(pendingSetupExpired(pending,pending.candleTime+2*resolutionSec,2,resolutionSec),true);
+  assert.equal(pendingSetupExpired(pending,pending.candleTime+3*resolutionSec,2,resolutionSec),true);
 });
 
 test('active worker expires pending before breakout evaluation and preserves OFF and Robot Stop order gates',()=>{

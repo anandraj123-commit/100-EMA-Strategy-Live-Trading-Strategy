@@ -15,13 +15,14 @@ import { writeSupervisorHealth } from './lib/runtime/supervision-health';
 import { acquireAccountEntryLease,acquireLease,newLeaseOwner,portfolioEntryLeaseKey,portfolioLeaseKey,releaseLease,renewLease,verifyLeaseOwnership } from './lib/runtime/leases';
 import { withExecutionActivity } from './lib/runtime/entry-coordinator';
 import { legacyPositionRequiresReconciliation } from './lib/runtime/legacy-guard';
-import { pendingSetupExpired } from './lib/pending';
+import { pendingEntryEligible, pendingSetupExpired } from './lib/pending';
+import type { LogSetup, StrategyLifecycle, DecisionLogRuntime } from './lib/decision-log';
 import { entryClientOrderId,entryIntentId } from './lib/entry-intents/identity';
 import { findBlockingEntryIntent,findRecoverableConfirmedEntryIntents,markEntryIntentOwnershipPersisted } from './lib/entry-intents/repository';
 import { EntryNotTransmittedError,reconcilePortfolioEntryIntents,submitPreparedEntryIntent } from './lib/entry-intents/service';
 import { protectionTriggerMethod,protectionTriggerPrice } from './lib/trades/protection';
 import { reconcileProtection } from './lib/trades/protection-reconciliation';
-import { finalPreOrderSafetyCheck } from './lib/runtime/final-preorder';
+import { explicitPositionSize, finalPreOrderDispatchStateCheck, finalPreOrderSafetyCheck } from './lib/runtime/final-preorder';
 import { dailyLossEntryAllowed,recordDailyLossEvent,restoreDailyLossStreak,tradingDayKey,type DailyLossScope } from './lib/risk/daily-loss-streak';
 import { restoreOpenBotTrade } from './lib/trades/open-bot-restoration';
 
@@ -42,6 +43,23 @@ const persistClosedTrade=(trade:any,productId:number,symbol:string,price:number|
 let product:any = null;
 let pending:any = null;
 let lastSetupCandle = 0;
+let entryPositionOpen = false;
+let entrySignalsBlockedThrough = -Infinity;
+
+// Entry eligibility only; ownership, reconciliation and protection remain independent.
+function observeEntryPosition(size:number) {
+  if (size !== 0) {
+    entryPositionOpen = true;
+    pending = null;
+  } else if (entryPositionOpen) {
+    entryPositionOpen = false;
+    pending = null;
+    // Exclude every candle already completed when flat is first confirmed,
+    // including history that publication grace has not delivered yet.
+    entrySignalsBlockedThrough = Math.max(entrySignalsBlockedThrough,
+      Math.floor(Date.now()/1000/config.resolutionSec)*config.resolutionSec-config.resolutionSec);
+  }
+}
 let previousPositionSize = 0;
 let activeTrade:any = null;
 let currentDay = '';
@@ -157,14 +175,101 @@ async function retryActiveAttribution(positionSize:number){
   addTradeEvent('TRADE_ATTRIBUTION_RETRY_PENDING',{productId:Number(product.id),approximateOpeningTime:activeTrade.adoptedAt??null,fillsInspected:fills.length,ordersInspected:orders.length,paginationComplete:historyComplete?'YES':'NO',botOrderMatch:persistedBot?'CHECKED':'NO',reason:ownership.reason,retry:'ACTIVE'});
 }
 
+// Decision Log state only. Never read by strategy, risk or execution gates.
+let decisionLogExit:any = null;
+let decisionLogEntry:any = null;
+function recordDecisionLogEvent(type:string, details:any) {
+  const at=new Date().toISOString();
+  const candleTime=completedCandles.at(-1)?.time;
+  const stages:Record<string,string>={ENTRY_INTENT_PREPARED:'ENTRY_PREPARING',
+    ENTRY_SUBMISSION_STARTED:'ENTRY_SUBMITTING',ORDER_SENT:'ENTRY_SUBMITTED',
+    ENTRY_CONFIRMED_PERSISTED:'POSITION_OPEN',PROTECTION_PENDING:'PROTECTION_PENDING',
+    PROTECTION_ACTIVE:'PROTECTION_ACTIVE',PROTECTION_REPAIR_REQUIRED:'PROTECTION_REPAIR_REQUIRED'};
+  if(type==='ORDER_SENT')decisionLogEntry={...details};
+  if(type==='POSITION_CLOSED')decisionLogExit={...details,detectedAt:at,
+    tradeId:activeTrade?.tradeId??null,entry:activeTrade?.actualEntryPrice??activeTrade?.entryPrice??null};
+  if(candleTime!=null&&stages[type]){
+    const current=uiLogs.find((row:any)=>row.candleTime===candleTime)?.runtimeObservation;
+    if(current)upsertUiLog(candleTime,{runtimeObservation:decisionLogRuntime(current.robotRunning,current.currentPrice,current.observedAt,null,Date.now())});
+    const previous=uiLogs.find((row:any)=>row.candleTime===candleTime);
+    upsertUiLog(candleTime,{entryStage:stages[type],
+      entryProgress:[...(previous?.entryProgress??[]),{stage:stages[type],at}].slice(-12)});
+  }
+}
+function recordDecisionLogClose(saved:any,closedTrade:any) {
+  if(!closedTrade.tradeId||decisionLogExit?.tradeId!==closedTrade.tradeId)return;
+  decisionLogExit={...decisionLogExit,exitReason:saved.exitReason??decisionLogExit.exitReason,
+    entry:saved.actualEntryPrice??decisionLogExit.entry,exit:saved.actualExitPrice??null,
+    grossPnL:saved.grossPnL??null,fees:saved.totalCharges??null,netPnL:saved.netPnL??null,
+    closedAt:saved.exitTime??null,financialStatus:saved.financialStatus};
+}
+function decisionLogRuntime(tradingEnabled:boolean,lastPrice:number,tickerObservedAt:string,privateAccountError:unknown,cycleStartedAt:number):DecisionLogRuntime {
+  const positionOpen=entryPositionOpen||cachedPositionSize!==0;
+  const blockReason=positionOpen?'POSITION_OPEN_NEW_ENTRY_BLOCKED':!tradingEnabled?'ROBOT_STOPPED'
+    :privateAccountError?'PRIVATE_ACCOUNT_UNAVAILABLE':!config.autoTrade?'AUTO_TRADE_OFF'
+    :!dailyLossStateReady?'DAILY_LOSS_STATE_UNAVAILABLE':!strategyStateReady?'STRATEGY_STATE_UNAVAILABLE'
+    :lossStreak>=config.maxDailyLosses?'DAILY_LOSS_LIMIT':blockingEntryIntent?'ENTRY_INTENT_BLOCKED':null;
+  const trade=activeTrade;
+  const entry=decisionLogEntry?.orderId===trade?.orderId?decisionLogEntry:null;
+  const protectionEvent=trade?.tradeId?tradeEvents.find((event:any)=>event.tradeId===trade.tradeId&&event.type.startsWith('PROTECTION_')):null;
+  return {positionOpen,newEntryAllowed:!blockReason,blockReason,robotRunning:tradingEnabled,autoTrade:config.autoTrade,
+    stage:positionOpen?'POSITION_OPEN':decisionLogExit&&Date.parse(decisionLogExit.detectedAt)>=cycleStartedAt?'TRADE_CLOSED'
+      :Number.isFinite(entrySignalsBlockedThrough)&&!pending&&!uiLogs.find((row:any)=>row.candleTime===completedCandles.at(-1)?.time)?.strategyLifecycle?.pendingExpired?'WAITING_FOR_NEW_SIGNAL':null,
+    currentPrice:lastPrice,priceSource:config.priceSource,observedAt:tickerObservedAt,
+    position:positionOpen?{direction:trade?.direction??(cachedPositionSize>0?'long':cachedPositionSize<0?'short':'UNKNOWN'),
+      size:cachedPositionSize||trade?.positionSize||null,entry:trade?.actualEntryPrice??trade?.entryPrice??cachedPosition?.entry_price??null,
+      trigger:entry?.trigger??trade?.trigger??null,initialSL:entry?.sl??null,currentSL:trade?.sl??null,tp:trade?.tp??null,
+      contractValue:trade?.contractValue??product?.contract_value??null,protectionState:trade?.protectionState??'UNKNOWN',
+      exchangeSync:trade?.exchangeSync?{...trade.exchangeSync}:null,
+      protectionObservation:protectionEvent?{type:protectionEvent.type,reason:protectionEvent.reason??protectionEvent.message??null,at:protectionEvent.at}:null}:null,
+    exit:decisionLogExit?{...decisionLogExit}:null};
+}
+
+// Observational snapshots only: none of these fields participate in entry gates.
+function strategyLifecycleLog(candleTime:number,signal:any,currentPending:any,expiredPending:any):StrategyLifecycle {
+  const snapshot=(setup:any):LogSetup=>({direction:setup.direction,candleTime:setup.candleTime,trigger:setup.trigger,sl:setup.sl});
+  const owner=currentPending||expiredPending;
+  const count=owner?.validCandles??config.entryValidCandles;
+  const index=owner?Math.max(0,Math.floor((candleTime-owner.candleTime)/config.resolutionSec)):0;
+  const eligible=Boolean(currentPending&&pendingEntryEligible(currentPending,candleTime,config.entryValidCandles,config.resolutionSec));
+  return {
+    signalCandleTime:owner?.candleTime??null,pendingDirection:owner?.direction??null,
+    trigger:owner?.trigger??null,sl:owner?.sl??null,pendingExists:Boolean(currentPending),
+    entryValidCandles:count,eligibleCandleNumber:owner&&index<=count?index:null,
+    eligibleCandlesRemaining:Math.max(0,count-index),eligibleCandlesUsed:Math.min(count,index),
+    breakoutEligible:eligible,pendingExpired:Boolean(expiredPending),
+    lifecycleStage:currentPending?(eligible?'BREAKOUT_ELIGIBLE':candleTime===currentPending.candleTime?'SIGNAL_CREATED':'WAITING_FOR_ELIGIBLE_CANDLE')
+      :expiredPending?'PENDING_EXPIRED':signal?'SIGNAL_DETECTED':'NO_VALID_SETUP',
+    previousPending:expiredPending?snapshot(expiredPending):null,
+    currentSignal:signal?{...snapshot(signal),action:currentPending?(currentPending.candleTime===signal.candleTime?'CREATED':'IGNORED_EXISTING_PENDING'):'NOT_ACTIVATED'}:null,
+    ignoredSignalReason:signal?(entryPositionOpen?'POSITION_OPEN':currentPending&&currentPending.candleTime!==signal.candleTime?'PENDING_ACTIVE':signal.candleTime<=entrySignalsBlockedThrough?'PRECEDES_FLAT_CONFIRMATION':null):null,
+    breakoutEvaluated:false,breakoutPassed:null,breakoutPrice:null,breakoutPriceSource:null,breakoutPriceObservedAt:null
+  };
+}
+
 function upsertUiLog(candleTime:number, patch:any) {
   const i = uiLogs.findIndex((x:any) => x.candleTime === candleTime);
-  if (i >= 0) uiLogs[i] = { ...uiLogs[i], ...patch };
-  else uiLogs.unshift({ candleTime, ...patch });
+  const row={...(i>=0?uiLogs[i]:{candleTime}),...patch};
+  if(row.strategyLifecycle){
+    const lifecycle:StrategyLifecycle={...row.strategyLifecycle};
+    if(patch.breakout&&lifecycle.breakoutEligible){
+      lifecycle.breakoutEvaluated=true;
+      lifecycle.breakoutPassed=patch.breakout.passed;
+      lifecycle.breakoutPrice=patch.breakout.currentPrice;
+      lifecycle.breakoutPriceSource=patch.breakout.source;
+      lifecycle.breakoutPriceObservedAt=patch.breakout.observedAt;
+      lifecycle.lifecycleStage=patch.breakout.passed?'BREAKOUT_TRIGGERED':'BREAKOUT_NOT_REACHED';
+    }
+    lifecycle.pendingExists=Boolean(pending&&pending.candleTime===lifecycle.signalCandleTime&&pending.direction===lifecycle.pendingDirection);
+    row.strategyLifecycle=lifecycle;
+  }
+  if (i >= 0) uiLogs[i] = row;
+  else uiLogs.unshift(row);
   uiLogs = uiLogs.slice(0, 60);
 }
 
 function addTradeEvent(type:string, details:any = {}) {
+  recordDecisionLogEvent(type,details);
   tradeEvents.unshift({ id:`${Date.now()}-${Math.random().toString(36).slice(2,8)}`, at:new Date().toISOString(), type, ...details });
   tradeEvents = tradeEvents.slice(0, 100);
 }
@@ -188,6 +293,7 @@ async function restoreCurrentDailyLossStreak(now=new Date()){
     addTradeEvent('DAILY_LOSS_STREAK_RESTORE_FAILED',{tradingDay:currentDay,error:dailyLossStateError,newEntries:'BLOCKED'});
   }
 }
+
 
 async function persistBotDailyLossOutcome(eventId:string,outcome:BotExitOutcome,now=new Date()){
   if(outcome!=='WIN'&&outcome!=='LOSS')return true;
@@ -279,6 +385,7 @@ async function refreshPosition(lastPrice:number, force = false) {
 
   const position = await getPosition(Number(product.id));
   const positionSize = Number(position?.size || 0);
+  observeEntryPosition(positionSize);
 
   // If the app starts while an XAUTUSD position is already open on Delta,
   // adopt that exchange position into the UI/state instead of treating it as
@@ -380,7 +487,7 @@ async function refreshPosition(lastPrice:number, force = false) {
     });
     const closedTrade = { ...activeTrade };
     void persistClosedTrade(closedTrade, Number(product.id), config.symbol, lastPrice, undefined, tradeContext())
-      .then(saved => {addTradeEvent('TRADE_HISTORY_PERSISTED', { tradeId:saved.tradeId, source:saved.source, financialStatus:saved.financialStatus });if(saved.reconciliationError)addTradeEvent('TRADE_FILL_ATTRIBUTION_UNCERTAIN',{tradeId:saved.tradeId,reason:saved.reconciliationError});if(saved.financialStatus!=='actual')addTradeEvent('TRADE_FINANCIALS_PARTIAL',{tradeId:saved.tradeId,financialStatus:saved.financialStatus});})
+      .then(saved => {recordDecisionLogClose(saved,closedTrade);addTradeEvent('TRADE_HISTORY_PERSISTED', { tradeId:saved.tradeId, source:saved.source, financialStatus:saved.financialStatus });if(saved.reconciliationError)addTradeEvent('TRADE_FILL_ATTRIBUTION_UNCERTAIN',{tradeId:saved.tradeId,reason:saved.reconciliationError});if(saved.financialStatus!=='actual')addTradeEvent('TRADE_FINANCIALS_PARTIAL',{tradeId:saved.tradeId,financialStatus:saved.financialStatus});})
       .catch(async error => {const message=error?.message||String(error);if(closedTrade.tradeId){try{await markTradeReconciling(closedTrade.tradeId,message);}catch{}}addTradeEvent(message.includes('RECONCILIATION_UNRESOLVED')?'TRADE_HISTORY_RECONCILIATION_UNRESOLVED':'TRADE_HISTORY_RECONCILIATION_FAILED', { source:closedTrade.source,tradeId:closedTrade.tradeId??null,error:message,retry:closedTrade.tradeId?'ACTIVE':'UNAVAILABLE_WITHOUT_STABLE_EXCHANGE_ID' });});
     activeTrade = null;
   }
@@ -453,6 +560,7 @@ async function refreshCandlesIfNeeded(nowSec:number) {
 }
 
 async function cycle() {
+  const decisionLogCycleStartedAt=Date.now();
   // The dashboard control is the master switch for NEW algo entries.
   // Monitoring stays alive even when the robot is stopped so an already-open
   // Delta position, its SL/TP and its eventual close continue to update on UI.
@@ -466,6 +574,7 @@ async function cycle() {
   }
   // Fast path: ticker is fetched every POLL_MS so breakout detection remains fast.
   const ticker = await getTicker(config.symbol);
+  const tickerObservedAt = new Date().toISOString();
   const lastTradedPrice = Number(ticker.close ?? 0);
   const markPrice = Number(ticker.mark_price ?? 0);
   const spotPrice = Number(ticker.spot_price ?? 0);
@@ -517,9 +626,9 @@ async function cycle() {
     trendUp = emaCurrent != null && emaPrevious != null ? emaCurrent > emaPrevious : false;
     trendDown = emaCurrent != null && emaPrevious != null ? emaCurrent < emaPrevious : false;
     buyPatternA = !!latest && emaCurrent != null && latest.open < emaCurrent && latest.close > emaCurrent;
-    buyPatternB = !!latest && emaCurrent != null && latest.open > emaCurrent && latest.close > emaCurrent && latest.low < emaCurrent;
+    buyPatternB = !!latest && emaCurrent != null && latest.open > emaCurrent && latest.close > emaCurrent && latest.low <= emaCurrent;
     sellPatternA = !!latest && emaCurrent != null && latest.open > emaCurrent && latest.close < emaCurrent;
-    sellPatternB = !!latest && emaCurrent != null && latest.open < emaCurrent && latest.close < emaCurrent && latest.high > emaCurrent;
+    sellPatternB = !!latest && emaCurrent != null && latest.open < emaCurrent && latest.close < emaCurrent && latest.high >= emaCurrent;
   }
 
   let decision:any = { action:'WAIT' };
@@ -540,13 +649,15 @@ async function cycle() {
     const s = evaluateSetup(completedCandles, config.emaLen, config.slopeLookback);
     lastSetupCandle = latest.time;
 
+    let expiredPendingForLog:any=null;
     if (pendingSetupExpired(pending,latest.time,config.entryValidCandles,config.resolutionSec)) {
+      expiredPendingForLog={...pending};
       addTradeEvent('PENDING_SETUP_EXPIRED',{direction:pending.direction,signalCandleTime:pending.candleTime,trigger:pending.trigger,validCandles:config.entryValidCandles});
       pending = null;
     }
 
-    if (!privateAccountError && dailyLossStateReady && strategyStateReady && tradingEnabled && positionSize === 0 && lossStreak < config.maxDailyLosses && dailyLossEntryAllowed(dailyLossStateReady,lossStreak,config.maxDailyLosses) && !pending) {
-      if (s) pending = {...s,validCandles:config.entryValidCandles,expiresAfterCandleTime:s.candleTime+config.entryValidCandles*config.resolutionSec,configRevision};
+    if (!privateAccountError && dailyLossStateReady && strategyStateReady && tradingEnabled && positionSize === 0 && lossStreak < config.maxDailyLosses && dailyLossEntryAllowed(dailyLossStateReady,lossStreak,config.maxDailyLosses) && !pending && !entryPositionOpen && latest.time > entrySignalsBlockedThrough) {
+      if (s) pending = {...s,validCandles:config.entryValidCandles,expiresAfterCandleTime:s.candleTime+(config.entryValidCandles+1)*config.resolutionSec,configRevision};
     }
 
     let candleDecision:any;
@@ -555,8 +666,8 @@ async function cycle() {
         ? { action:'STOPPED', reason:'POSITION_STILL_OPEN' }
         : { action:'STOPPED', reason:'ROBOT_STOPPED' };
       decision = candleDecision;
-    } else if (positionSize !== 0) {
-      candleDecision = { action:'WAIT', reason:'EXISTING_POSITION' };
+    } else if (entryPositionOpen || positionSize !== 0) {
+      candleDecision = { action:'WAIT', reason:'POSITION_OPEN_NEW_ENTRY_BLOCKED' };
     } else if (!dailyLossStateReady) {
       candleDecision = { action:'WAIT', reason:'DAILY_LOSS_STATE_UNAVAILABLE' };
     } else if (lossStreak >= config.maxDailyLosses) {
@@ -573,17 +684,21 @@ async function cycle() {
       buy:{ slope:trendUp, patternA:buyPatternA, patternB:buyPatternB, setup:trendUp && (buyPatternA || buyPatternB) },
       sell:{ slope:trendDown, patternA:sellPatternA, patternB:sellPatternB, setup:trendDown && (sellPatternA || sellPatternB) },
       setup:s ? { direction:s.direction, trigger:s.trigger, sl:s.sl } : null,
+      strategyLifecycle:strategyLifecycleLog(latest.time,s,pending,expiredPendingForLog),
       pending:pending ? {direction:pending.direction,trigger:pending.trigger,sl:pending.sl,candleTime:pending.candleTime,validCandles:pending.validCandles,expiresAfterCandleTime:pending.expiresAfterCandleTime} : null,
       account:{ equity, available, riskBase:'available', riskPct:config.riskPct, positionSize, lossStreak },
       decision:candleDecision
     });
   }
 
+  if(latest)upsertUiLog(latest.time,{entryStage:null,runtimeObservation:decisionLogRuntime(tradingEnabled,lastPrice,tickerObservedAt,privateAccountError,decisionLogCycleStartedAt)});
+
   // Public observation is allowed during a private outage, but execution remains
   // fail-closed and the existing outer error boundary keeps account status unhealthy.
+  if(privateAccountError&&latest)upsertUiLog(latest.time,{observationBlockReason:'PRIVATE_ACCOUNT_UNAVAILABLE',runtimeObservation:decisionLogRuntime(tradingEnabled,lastPrice,tickerObservedAt,privateAccountError,decisionLogCycleStartedAt)});
   if(privateAccountError)throw privateAccountError;
 
-  if (dailyLossStateReady && strategyStateReady && tradingEnabled && !blockingEntryIntent && pending && pending.configRevision===configRevision && positionSize === 0 && lossStreak < config.maxDailyLosses && dailyLossEntryAllowed(dailyLossStateReady,lossStreak,config.maxDailyLosses)) {
+  if (dailyLossStateReady && strategyStateReady && tradingEnabled && !blockingEntryIntent && pending && pending.configRevision===configRevision && positionSize === 0 && lossStreak < config.maxDailyLosses && dailyLossEntryAllowed(dailyLossStateReady,lossStreak,config.maxDailyLosses) && !entryPositionOpen && pendingEntryEligible(pending,latest?.time??NaN,config.entryValidCandles,config.resolutionSec)) {
     const entryConfigRevision=pending.configRevision;
     const breakout = pending.direction === 'long'
       ? lastPrice > pending.trigger
@@ -591,12 +706,14 @@ async function cycle() {
 
     if (!breakout && latest) {
       upsertUiLog(latest.time, {
-        breakout:{ direction:pending.direction, trigger:pending.trigger, currentPrice:lastPrice, passed:false },
+        breakout:{ direction:pending.direction, trigger:pending.trigger, currentPrice:lastPrice, passed:false, source:config.priceSource, observedAt:tickerObservedAt },
         decision:{ action:'WAIT', reason:'WAITING_FOR_BREAKOUT' }
       });
     }
 
     if (breakout) {
+      if(latest)upsertUiLog(latest.time,{entryStage:'ENTRY_PREPARING',entryProgress:[{stage:'BREAKOUT_CONFIRMED',at:tickerObservedAt},{stage:'ENTRY_PREPARING',at:new Date().toISOString()}]});
+      if(latest)upsertUiLog(latest.time,{breakout:{direction:pending.direction,trigger:pending.trigger,currentPrice:lastPrice,passed:true,source:config.priceSource,observedAt:tickerObservedAt}});
       const entryLease=await acquireAccountEntryLease(runtimeEnvironment!,newLeaseOwner(`entry:${portfolioId}`),{leaseMs:90_000,waitMs:1_000,retryMs:100});
       if(!entryLease){
         decision={action:'WAIT',reason:'ACCOUNT_ENTRY_LOCK_BUSY'};
@@ -615,7 +732,7 @@ async function cycle() {
       await refreshPosition(lastPrice, true);
 
       if (cachedPositionSize !== 0) {
-        decision = { action:'WAIT', reason:'EXISTING_POSITION' };
+        decision = { action:'WAIT', reason:'POSITION_OPEN_NEW_ENTRY_BLOCKED' };
       } else {
         // Risk must use the freshest Delta available margin at the breakout.
         await refreshWallet(true);
@@ -670,7 +787,7 @@ async function cycle() {
 
         if (latest) {
           upsertUiLog(latest.time, {
-            breakout:{ direction:pending.direction, trigger:pending.trigger, currentPrice:lastPrice, passed:true },
+            breakout:{ direction:pending.direction, trigger:pending.trigger, currentPrice:lastPrice, passed:true, source:config.priceSource, observedAt:tickerObservedAt },
             risk:{
               equity:freshEquity,
               available:freshAvailable,
@@ -735,7 +852,7 @@ async function cycle() {
               const side:'buy'|'sell' = pending.direction === 'long' ? 'buy' : 'sell';
               const entrySetup={direction:pending.direction,trigger:Number(pending.trigger),sl:Number(pending.sl),candleTime:Number(pending.candleTime),configRevision:entryConfigRevision};
               const finalInput=()=>({identity:{portfolioId,environment:runtimeEnvironment!,symbol:config.symbol,productId:runtimeProductId},setup:entrySetup,config:{revision:entryConfigRevision,autoTrade:config.autoTrade,entryValidCandles:config.entryValidCandles,resolutionSec:config.resolutionSec,riskPct:config.riskPct,rr:config.rr,minStopPct:config.minStopPct,maxEffectiveLeverage:config.maxEffectiveLeverage,maxFeeRiskPct:config.maxFeeRiskPct,gstPct:config.gstPct},product:{id:Number(product.id),contractValue:Number(product.contract_value),tickSize:Number(product.tick_size||0.01),takerRate:Number(product.taker_commission_rate??0.0005)}});
-              const finalDependencies=()=>({robotRunning:()=>!shuttingDown&&readControl(portfolioId).running===true,refreshConfig:async()=>{await refreshRuntimeSettings();return {revision:configRevision,autoTrade:config.autoTrade,entryValidCandles:config.entryValidCandles,resolutionSec:config.resolutionSec,riskPct:config.riskPct,rr:config.rr,minStopPct:config.minStopPct,maxEffectiveLeverage:config.maxEffectiveLeverage,maxFeeRiskPct:config.maxFeeRiskPct,gstPct:config.gstPct};},currentPending:()=>pending,latestCompletedCandleTime:()=>Math.max(Number(completedCandles.at(-1)?.time||0),Math.floor(Date.now()/1000/config.resolutionSec)*config.resolutionSec-config.resolutionSec),leaseOwned:()=>verifyLeaseOwnership(entryLease),leaseLost:()=>entryExecution.ownershipLost(),portfolioEntryAllowed:async()=>!shuttingDown&&await renewLease(portfolioEntryLease,90_000)&&await verifyLeaseOwnership(portfolioEntryLease),portfolio:async()=>{const current=await findPortfolioById(portfolioId);return current?{id:String(current._id),environment:current.environment,symbol:current.symbol,productId:current.productId}:null;},position:()=>getPosition(runtimeProductId),availableMargin:async()=>{const wallet=await getWallet(),usd=(wallet?.result||[]).find((w:any)=>w.asset_symbol==='USD')||(wallet?.result||[])[0];return Number(usd?.available_balance_for_robo||usd?.available_balance||0);}});
+              const finalDependencies=()=>({currentConfig:()=>({...finalInput().config,revision:configRevision}),dailyLossEntryAllowed:()=>dailyLossEntryAllowed(dailyLossStateReady,lossStreak,config.maxDailyLosses),robotRunning:()=>!shuttingDown&&readControl(portfolioId).running===true,refreshConfig:async()=>{await refreshRuntimeSettings();return {revision:configRevision,autoTrade:config.autoTrade,entryValidCandles:config.entryValidCandles,resolutionSec:config.resolutionSec,riskPct:config.riskPct,rr:config.rr,minStopPct:config.minStopPct,maxEffectiveLeverage:config.maxEffectiveLeverage,maxFeeRiskPct:config.maxFeeRiskPct,gstPct:config.gstPct};},currentPending:()=>pending,latestCompletedCandleTime:()=>Math.max(Number(completedCandles.at(-1)?.time||0),Math.floor(Date.now()/1000/config.resolutionSec)*config.resolutionSec-config.resolutionSec),leaseOwned:()=>verifyLeaseOwnership(entryLease),leaseLost:()=>entryExecution.ownershipLost(),portfolioEntryAllowed:async()=>!shuttingDown&&await renewLease(portfolioEntryLease,90_000)&&await verifyLeaseOwnership(portfolioEntryLease),portfolio:async()=>{const current=await findPortfolioById(portfolioId);return current?{id:String(current._id),environment:current.environment,symbol:current.symbol,productId:current.productId}:null;},position:async()=>{const position=await getPosition(runtimeProductId);const size=explicitPositionSize(position);if(size!==null)observeEntryPosition(size);return position;},availableMargin:async()=>{const wallet=await getWallet(),usd=(wallet?.result||[]).find((w:any)=>w.asset_symbol==='USD')||(wallet?.result||[])[0];return Number(usd?.available_balance_for_robo||usd?.available_balance||0);}});
               const finalSafety=await finalPreOrderSafetyCheck(finalInput(),finalDependencies());
               if(!finalSafety.ok){decision={action:'SKIP',reason:finalSafety.reason};addTradeEvent(finalSafety.reason,{direction:entrySetup.direction,signalCandleTime:entrySetup.candleTime,...('guard'in finalSafety?{guard:finalSafety.guard}:{})});return;}
               const identity={portfolioId,environment:runtimeEnvironment!,productId:Number(product.id),side,signalCandleTime:Number(pending.candleTime),configRevision:entryConfigRevision};
@@ -743,7 +860,7 @@ async function cycle() {
               const {contracts:finalContracts,riskAmount:finalRiskAmount,sl:finalSl,tp:finalTp,takerRate:finalTakerRate}=finalSafety;
               const intent={intentId,portfolioId,environment:runtimeEnvironment!,symbol:config.symbol,productId:Number(product.id),side,direction:entrySetup.direction,contracts:finalContracts,clientOrderId:oid,signalCandleTime:entrySetup.candleTime,configRevision:entryConfigRevision,trigger:entrySetup.trigger,sl:finalSl,tp:finalTp,contractValue,riskAmount:finalRiskAmount,takerRate:finalTakerRate,gstPct:config.gstPct,strategyConfig:botStrategyConfigSnapshot()};
               addTradeEvent('ENTRY_INTENT_PREPARED',{intentId,clientOrderId:oid,signalCandleTime:pending.candleTime});
-              const submission=await submitPreparedEntryIntent(intent,async clientOrderId=>{await entryExecution.assertOwnership();addTradeEvent('ENTRY_SUBMISSION_STARTED',{intentId,clientOrderId});const adjacentSafety=await finalPreOrderSafetyCheck({...finalInput(),expectedContracts:finalContracts},finalDependencies());if(!adjacentSafety.ok){addTradeEvent(adjacentSafety.reason,{intentId,direction:entrySetup.direction,signalCandleTime:entrySetup.candleTime,...('guard'in adjacentSafety?{guard:adjacentSafety.guard}:{})});throw new EntryNotTransmittedError(adjacentSafety.reason);}return placeMarketOrder(Number(product.id),side,adjacentSafety.contracts,clientOrderId);});
+              const submission=await submitPreparedEntryIntent(intent,async clientOrderId=>{await entryExecution.assertOwnership();addTradeEvent('ENTRY_SUBMISSION_STARTED',{intentId,clientOrderId});const adjacentSafety=await finalPreOrderSafetyCheck({...finalInput(),expectedContracts:finalContracts},finalDependencies());if(!adjacentSafety.ok){addTradeEvent(adjacentSafety.reason,{intentId,direction:entrySetup.direction,signalCandleTime:entrySetup.candleTime,...('guard'in adjacentSafety?{guard:adjacentSafety.guard}:{})});throw new EntryNotTransmittedError(adjacentSafety.reason);}const dispatchState=finalPreOrderDispatchStateCheck(finalInput(),finalDependencies());if(!dispatchState.ok){addTradeEvent(dispatchState.reason,{intentId,direction:entrySetup.direction,signalCandleTime:entrySetup.candleTime});throw new EntryNotTransmittedError(dispatchState.reason);}return placeMarketOrder(Number(product.id),side,adjacentSafety.contracts,clientOrderId);});
               if(submission.status!=='CONFIRMED'){
                 blockingEntryIntent=submission.status==='REJECTED'?null:submission.intent;
                 decision={action:'WAIT',reason:submission.status==='AMBIGUOUS'?'AMBIGUOUS_ENTRY_RECONCILIATION':submission.status==='REJECTED'?(submission.error as EntryNotTransmittedError).reason:'ENTRY_INTENT_BLOCKED'};
@@ -751,6 +868,7 @@ async function cycle() {
                 return;
               }
               const order = submission.order;
+              observeEntryPosition(entrySetup.direction === 'long' ? finalContracts : -finalContracts);
               if (latest) upsertUiLog(latest.time, { order:{ market:'SENT', side, orderId:order?.result?.id ?? null }, decision:{ action:'ENTRY', reason:'ORDER_SENT' }, entryEvent:true });
               addTradeEvent('ORDER_SENT', { side:side.toUpperCase(), orderId:order?.result?.id ?? null, direction:entrySetup.direction, trigger:entrySetup.trigger, sl:finalSl, tp:finalTp, contracts:finalContracts, breakoutPrice:lastPrice });
 
@@ -802,7 +920,7 @@ async function cycle() {
 
   if (decision.action === 'WAIT') {
     let waitReason = 'NO_VALID_SETUP';
-    if (cachedPositionSize !== 0) waitReason = 'EXISTING_POSITION';
+    if (entryPositionOpen || cachedPositionSize !== 0) waitReason = 'POSITION_OPEN_NEW_ENTRY_BLOCKED';
     else if (!dailyLossStateReady) waitReason = 'DAILY_LOSS_STATE_UNAVAILABLE';
     else if (lossStreak >= config.maxDailyLosses) waitReason = 'DAILY_LOSS_LIMIT';
     else if (blockingEntryIntent) waitReason = 'AMBIGUOUS_ENTRY_RECONCILIATION';
@@ -812,6 +930,15 @@ async function cycle() {
       if (!existing?.entryEvent) upsertUiLog(latest.time, { decision:{ action:'WAIT', reason:waitReason } });
     }
   }
+
+  if(latest)upsertUiLog(latest.time,{
+    runtimeObservation:decisionLogRuntime(tradingEnabled,lastPrice,tickerObservedAt,privateAccountError,decisionLogCycleStartedAt),
+    executionDecision:decision,
+    ...(entryPositionOpen?{pending:null}:{}),
+    observationBlockReason:entryPositionOpen?'POSITION_OPEN_NEW_ENTRY_BLOCKED':!tradingEnabled?'ROBOT_STOPPED':!dailyLossStateReady?'DAILY_LOSS_STATE_UNAVAILABLE'
+      :lossStreak>=config.maxDailyLosses?'DAILY_LOSS_LIMIT':blockingEntryIntent?'ENTRY_INTENT_BLOCKED'
+      :pending&&pending.configRevision!==configRevision?'CONFIG_GENERATION_CHANGED':null
+  });
 
   const latestControl = readControl(portfolioId);
   const robotRunningNow = latestControl.running === true;
