@@ -294,6 +294,7 @@ async function restoreCurrentDailyLossStreak(now=new Date()){
   }
 }
 
+
 async function persistBotDailyLossOutcome(eventId:string,outcome:BotExitOutcome,now=new Date()){
   if(outcome!=='WIN'&&outcome!=='LOSS')return true;
   try{
