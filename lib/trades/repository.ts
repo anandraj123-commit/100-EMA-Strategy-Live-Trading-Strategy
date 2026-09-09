@@ -66,7 +66,7 @@ export async function findOpenManualTrades(productId:number,portfolioId?:string)
 export async function findUnresolvedBotTrades(productId:number,portfolioId?:string){return (await collection()).find({...runtimeScope(productId,portfolioId),source:'bot',status:{$in:['OPEN','RECONCILING']}} as Filter<TradeDocument>).sort({createdAt:1}).toArray();}
 export async function findUnresolvedManualTrades(productId:number,portfolioId?:string){return (await collection()).find({...runtimeScope(productId,portfolioId),source:'exchange_existing',status:{$in:['OPEN','RECONCILING']}} as Filter<TradeDocument>).sort({createdAt:1}).toArray();}
 
-export async function hasActivePortfolioTrades(portfolioId:string){return Boolean(await (await collection()).findOne({portfolioId,status:{$in:['OPEN','RECONCILING']}} as Filter<TradeDocument>,{projection:{_id:1}}));}
+export async function hasActivePortfolioTrades(portfolioId:string){return Boolean(await (await collection()).findOne({portfolioId,status:{$ne:'CLOSED'}} as Filter<TradeDocument>,{projection:{_id:1}}));}
 export async function findLegacyUnresolvedTrades(productId:number){return (await collection()).find({productId,portfolioId:{$exists:false},status:{$in:['OPEN','RECONCILING']}} as Filter<TradeDocument>).sort({createdAt:1}).toArray();}
 
 export async function markTradeReconciling(tradeId:string,error:string){const now=new Date();await (await collection()).updateOne({tradeId},{$set:{status:'RECONCILING',attributionStatus:'UNKNOWN',reconciliationError:error,attributionNote:error,updatedAt:now}});}

@@ -67,6 +67,7 @@ export function workerHarness(options:{entryValidCandles?:number;emaLen?:number;
     './lib/trades/repository':{findUnresolvedBotTrades:empty,findUnresolvedManualTrades:empty,
       updateTradeProtectionState:async()=>{}},
     './lib/trades/persistence':{persistClosedTrade:async()=>({tradeId:'existing',financialStatus:'actual'}),persistOpenBotTrade:async(trade:any)=>{if(failPersistence)throw new Error('test persistence unavailable');persisted.push({...trade});return {tradeId:'trade-1'};}},
+    './lib/portfolio/deletion-state':{portfolioEntryAllowed:yes},
     './lib/portfolio/repository':{findPortfolioById:async()=>({_id:'contract',environment:'demo',symbol:'XAUTUSD',productId:27})},
     './lib/runtime/leases':{newLeaseOwner:()=> 'owner',portfolioEntryLeaseKey:()=> 'portfolio-entry',
       acquireAccountEntryLease:async()=>({key:'account',ownerId:'owner'}),acquireLease:async()=>({key:'portfolio',ownerId:'owner'}),

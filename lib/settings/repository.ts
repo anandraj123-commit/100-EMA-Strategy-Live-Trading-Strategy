@@ -1,8 +1,18 @@
 import { getDb } from '../db/mongodb';
 import type { RuntimeSettingsDocument, RuntimeSettingValue } from '../../models/RuntimeSettings';
+import { runtimeSettingDefaults, validateRuntimeSettings } from './definitions';
 
 async function collection(){return (await getDb()).collection<RuntimeSettingsDocument>('runtime_settings');}
 const settingsId=(portfolioId?:string)=>portfolioId?`portfolio:${portfolioId}`:'runtime-settings';
+export async function createRuntimeSettingsIfMissing(portfolioId:string){
+  if(!portfolioId)throw new Error('Portfolio runtime identity is required');
+  const values=validateRuntimeSettings(runtimeSettingDefaults());
+  await (await collection()).updateOne(
+    {_id:settingsId(portfolioId)},
+    {$setOnInsert:{portfolioId,values,updatedAt:new Date()}},
+    {upsert:true}
+  );
+}
 export function sanitizeRuntimeSettingOverrides(values:Record<string,RuntimeSettingValue>){
   if(values.RISK_BASE===undefined||values.RISK_BASE==='available')return values;
   const {RISK_BASE:_unsupported,...safe}=values;
@@ -14,3 +24,5 @@ export async function saveRuntimeSettingOverrides(values:Record<string,RuntimeSe
   await (await collection()).updateOne({_id:settingsId(portfolioId)},{$set:{values,updatedAt,updatedBy,...(portfolioId?{portfolioId}:{})}}, {upsert:true});
   return {values,updatedAt,updatedBy};
 }
+
+export async function deletePortfolioRuntimeSettings(portfolioId:string){if(!portfolioId)throw new Error("Portfolio runtime identity is required");await (await collection()).deleteOne({_id:settingsId(portfolioId)});}
