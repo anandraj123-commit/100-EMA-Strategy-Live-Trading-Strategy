@@ -24,3 +24,5 @@ export async function saveRuntimeSettingOverrides(values:Record<string,RuntimeSe
   await (await collection()).updateOne({_id:settingsId(portfolioId)},{$set:{values,updatedAt,updatedBy,...(portfolioId?{portfolioId}:{})}}, {upsert:true});
   return {values,updatedAt,updatedBy};
 }
+
+export async function deletePortfolioRuntimeSettings(portfolioId:string){if(!portfolioId)throw new Error("Portfolio runtime identity is required");await (await collection()).deleteOne({_id:settingsId(portfolioId)});}
