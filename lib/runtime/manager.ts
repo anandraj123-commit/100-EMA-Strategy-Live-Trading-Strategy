@@ -1,3 +1,4 @@
+import { getModeChildEnvironment } from '../app-mode';
 import { portfolioEntryAllowed } from '../portfolio/deletion-state';
 import { spawn,type ChildProcess } from 'node:child_process';
 import path from 'node:path';
@@ -31,5 +32,5 @@ export class TradingRuntimeManager{
 
 export function spawnPortfolioWorker(portfolio:RuntimePortfolio,lease:RuntimeLease){
   const executable=path.join(process.cwd(),'node_modules','.bin','tsx');
-  return spawn(executable,['worker.ts'],{cwd:process.cwd(),env:{...process.env,PORTFOLIO_RUNTIME_ID:portfolio._id.toHexString(),PORTFOLIO_RUNTIME_LEASE_OWNER:lease.ownerId},stdio:'inherit'});
+  return spawn(executable,['worker.ts'],{cwd:process.cwd(),env:{...getModeChildEnvironment(),PORTFOLIO_RUNTIME_ID:portfolio._id.toHexString(),PORTFOLIO_RUNTIME_LEASE_OWNER:lease.ownerId},stdio:'inherit'});
 }

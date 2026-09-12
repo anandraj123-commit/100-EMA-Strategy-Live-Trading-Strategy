@@ -1,13 +1,15 @@
+import { getDeltaConfig } from '../app-mode';
 import { getDb } from '../db/mongodb';
 import { ObjectId } from 'mongodb';
 import type { PortfolioDocument } from '../../models/Portfolio';
 import { createRuntimeSettingsIfMissing } from '../settings/repository';
 let indexReady:Promise<string>|null=null;
 async function collection(){const rows=(await getDb()).collection<PortfolioDocument>('portfolio');indexReady??=rows.createIndex({environment:1,symbol:1},{unique:true,name:'portfolio_environment_symbol_unique'}).catch(error=>{indexReady=null;throw error;});await indexReady;return rows;}
-export async function listPortfolio(){return (await collection()).find({environment:{$in:['real','demo']}}).sort({createdAt:1}).toArray();}
-export async function findPortfolio(environment:PortfolioDocument['environment'],symbol:string){return (await collection()).findOne({environment,symbol});}
-export async function findPortfolioById(id:string){if(!ObjectId.isValid(id))return null;return (await collection()).findOne({_id:new ObjectId(id)});}
-export async function listPortfolioByEnvironment(environment:PortfolioDocument['environment']){return (await collection()).find({environment}).sort({createdAt:1}).toArray();}
+export function effectivePortfolio<T extends PortfolioDocument>(row:T):T{return {...row,environment:getDeltaConfig().environment};}
+export async function listPortfolio(){return (await (await collection()).find({}).sort({createdAt:1}).toArray()).map(effectivePortfolio);}
+export async function findPortfolio(_environment:PortfolioDocument['environment'],symbol:string){const row=await (await collection()).findOne({symbol});return row?effectivePortfolio(row):null;}
+export async function findPortfolioById(id:string){if(!ObjectId.isValid(id))return null;const row=await (await collection()).findOne({_id:new ObjectId(id)});return row?effectivePortfolio(row):null;}
+export async function listPortfolioByEnvironment(environment:PortfolioDocument['environment']){return listPortfolio();}
 export async function insertPortfolio(document:Omit<PortfolioDocument,'_id'>){
   const rows=await collection();
   const portfolio={...document,_id:new ObjectId()};

@@ -1,3 +1,5 @@
+import { getAppMode } from '../../../lib/app-mode';
+import { validateStatusMode } from '../../../lib/runtime/status-mode';
 import { NextRequest, NextResponse } from 'next/server';
 import { readStatus } from '../../../lib/state';
 import { requireApiSession } from '../../../lib/auth/api';
@@ -8,5 +10,6 @@ export async function GET(req: NextRequest){
   if (!auth.ok) return auth.error;
   const portfolio=await resolvePortfolioId(req.nextUrl.searchParams.get('portfolioId'));
   if(!portfolio)return NextResponse.json({error:'Portfolio not found'},{status:404});
-  return NextResponse.json(readStatus(portfolio._id!.toHexString()));
+  const appMode=getAppMode();
+  return NextResponse.json(validateStatusMode(readStatus(portfolio._id!.toHexString()),appMode));
 }

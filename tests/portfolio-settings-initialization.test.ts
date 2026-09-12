@@ -52,7 +52,7 @@ function worker(id:string){
   const configModule={exports:{} as any};
   vm.runInNewContext(compile(fs.readFileSync('lib/config.ts','utf8')),{
     module:configModule,exports:configModule.exports,process:{env:{EMA_LENGTH:'100',RR:'8',RISK_PCT:'1'},cwd:()=>process.cwd()},
-    console:{log(){},warn(){}},require:(name:string)=>name==='dotenv'?{config:()=>({})}:require(name)
+    console:{log(){},warn(){}},require:(name:string)=>name==='dotenv'?{config:()=>({})}:name==='./app-mode'?require('../lib/app-mode'):require(name)
   });
   const file=ts.createSourceFile('worker.ts',fs.readFileSync('worker.ts','utf8'),ts.ScriptTarget.ES2022,true);
   const launcher=file.statements.at(-1)!;

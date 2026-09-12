@@ -7,7 +7,7 @@ import { getMongoClient } from '../lib/db/mongodb';
 
 const uri=process.env.TRADE_TEST_MONGODB_URI;
 test('MongoDB trade upsert, indexes, statistics, authentication and pagination',{skip:!uri},async()=>{
-  const databaseName=`trade_test_${crypto.randomBytes(8).toString('hex')}`;process.env.MONGODB_URI=uri;process.env.MONGODB_DB=databaseName;process.env.AUTH_SECRET='trade-test-auth-secret-at-least-32-characters';
+  const databaseName=`trade_test_${crypto.randomBytes(8).toString('hex')}`;process.env.MONGODB_URI_TESTING=uri;process.env.MONGODB_DB_TESTING=databaseName;process.env.AUTH_SECRET_TESTING='trade-test-auth-secret-at-least-32-characters';
   const applicationMongo=await getMongoClient();const mongo=new MongoClient(uri as string);
   try{
     await mongo.connect();

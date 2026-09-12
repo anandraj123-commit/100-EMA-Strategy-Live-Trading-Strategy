@@ -1,3 +1,4 @@
+# TESTING deployment blueprint. Railway Production supplies APP_MODE=production separately.
 services:
   - type: web
     name: trading-platform
@@ -12,15 +13,15 @@ services:
         value: 5m
       - key: POLL_MS
         value: 1000
-      - key: MONGODB_URI
+      - key: APP_MODE
+        value: testing
+      - key: MONGODB_URI_TESTING
         sync: false
-      - key: AUTH_SECRET
+      - key: MONGODB_DB_TESTING
         sync: false
-      - key: DELTA_LIVE_API_KEY
+      - key: AUTH_SECRET_TESTING
         sync: false
-      - key: DELTA_LIVE_API_SECRET
+      - key: DELTA_API_KEY_TESTING
         sync: false
-      - key: DELTA_DEMO_API_KEY
-        sync: false
-      - key: DELTA_DEMO_API_SECRET
+      - key: DELTA_API_SECRET_TESTING
         sync: false

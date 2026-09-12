@@ -41,7 +41,7 @@ The trade is rejected when estimated entry + estimated exit fees + GST exceed `M
 ## Setup
 ```bash
 cp .env.example .env.local
-# Configure separate Delta live and demo credentials in .env.local
+# Configure APP_MODE and its five required variables from .env.example
 npm install
 npm run dev
 ```
@@ -55,12 +55,15 @@ The web dashboard and its APIs require an administrator session. The standalone 
 Add these values to `.env.local` (never commit that file):
 
 ```bash
-MONGODB_URI=your_mongodb_connection_string
-MONGODB_DB=trading_dashboard
-AUTH_SECRET=generate_a_secure_random_secret
+APP_MODE=development
+MONGODB_URI_DEVELOPMENT=
+MONGODB_DB_DEVELOPMENT=
+AUTH_SECRET_DEVELOPMENT=
+DELTA_API_KEY_DEVELOPMENT=
+DELTA_API_SECRET_DEVELOPMENT=
 ```
 
-Generate `AUTH_SECRET` with a cryptographically secure password generator. Create the initial administrator once by passing temporary environment values directly to the command:
+Generate the selected mode’s `AUTH_SECRET_*` with a cryptographically secure password generator. Create the initial administrator once by passing temporary environment values directly to the command:
 
 ```bash
 read -r "INITIAL_ADMIN_EMAIL?Admin email: "
@@ -82,16 +85,54 @@ The default test suite never connects to a production database. To run the opt-i
 AUTH_TEST_MONGODB_URI=your_disposable_test_mongodb_connection_string
 ```
 
-## Delta environments
-- Production REST: `https://api.india.delta.exchange`
-- Demo/Testnet REST: `https://cdn-ind.testnet.deltaex.org`
+## Application modes
 
-Demo and live API keys are different. Trading API keys may require the server public IP to be whitelisted.
+`APP_MODE` is mandatory: `development`, `testing`, or `production`. It is independent
+of `NODE_ENV`; `next start` with `APP_MODE=testing` still uses testing credentials and
+Delta testnet. Only the selected mode's five variables are required. Missing or
+invalid configuration fails; generic and old live/demo credential variables are not fallbacks.
 
-Use `DELTA_LIVE_API_KEY` and `DELTA_LIVE_API_SECRET` for REAL portfolios, and
-`DELTA_DEMO_API_KEY` and `DELTA_DEMO_API_SECRET` for DEMO portfolios. There is
-no credential fallback between environments. Portfolio workers remain stopped
-from private trading activity when their environment credentials are absent.
+| Mode | Required variable suffix | Delta endpoint |
+| --- | --- | --- |
+| development | `_DEVELOPMENT` | `https://cdn-ind.testnet.deltaex.org` |
+| testing | `_TESTING` | `https://cdn-ind.testnet.deltaex.org` |
+| production | `_PRODUCTION` | `https://api.india.delta.exchange` |
+
+For each suffix supply `MONGODB_URI`, `MONGODB_DB`, `AUTH_SECRET`, `DELTA_API_KEY`,
+and `DELTA_API_SECRET`. Use distinct databases and auth secrets for each deployment.
+Provision separate Delta testnet accounts for development and testing if exchange
+positions must also be independent: database isolation does not isolate a shared
+Delta account. Credentials stay server-side. Mode configuration is read from deployment variables or the root `.env.local` only,
+with deployment variables taking precedence. Next.js mode-specific files do not
+select trading mode or credentials. Use literal values for these settings.
+Restart web and supervisor together
+after changing configuration. `npm run check-env` validates only the selected mode.
+
+`npm run dev` starts web and supervisor; `npm run build` then `npm start` runs both
+with Next.js production serving. The Render blueprint is a testing deployment;
+Railway production must explicitly set `APP_MODE=production` and the five
+`*_PRODUCTION` variables. No script hard-codes a trading mode.
+
+Portfolios use the instance mode; there is no environment selector. Old live/demo
+URLs redirect to `/futures/dashboard`. The legacy portfolio `environment` field and
+index remain for storage compatibility, but reads return the mode-selected value.
+No existing records are migrated or copied. Legacy product IDs must match the
+selected endpoint; the existing identity guard rejects mismatches.
+
+All collections, including users, sessions and runtime leases, use the selected
+MongoDB database. Run `npm run create-admin` separately for each new database;
+users are never copied. Lease ownership remains exclusive. Do not point two modes
+at the same database. A second instance using the same database still cannot take
+an active portfolio lease.
+
+Local `data/status-<id>.json` and `data/control-<id>.json` behavior is unchanged.
+Use separate working directories/volumes for concurrently running instances.
+Do not copy runtime control files between deployments. `AUTO_TRADE` and START/STOP
+remain independent; enabling execution does not start a robot.
+
+Automated tests supply explicit dummy testing configuration via the test runner.
+For a build-only check without deployment secrets, inject dummy selected-mode
+variables in the command environment; never start a worker with that configuration.
 
 ## XAUTUSD price source
 For this strategy, use `PRICE_SOURCE=last` when you want breakout detection to match Delta's **Traded Price** chart. The dashboard also shows mark, last traded, and spot prices separately.

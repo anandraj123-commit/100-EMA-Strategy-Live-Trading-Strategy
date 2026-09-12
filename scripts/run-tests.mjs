@@ -1,3 +1,4 @@
+import { modeTestEnvironment } from '../tests/support/mode-env.mjs';
 import { readdir } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import path from 'node:path';
@@ -40,7 +41,7 @@ console.log(`Discovered ${tests.length} test files.`);
 const child = spawn(
   process.execPath,
   ['--import', 'tsx', '--test', ...tests],
-  { cwd: root, stdio: 'inherit' },
+  { cwd: root, stdio: 'inherit', env: { ...process.env, ...modeTestEnvironment } },
 );
 
 child.on('error', (error) => {

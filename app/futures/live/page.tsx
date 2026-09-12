@@ -1,1 +1,4 @@
-import { redirect } from 'next/navigation';import FuturesNav from '../../../components/FuturesNav';import TradeWorkspaceList from '../../../components/TradeWorkspaceList';import { getServerSession } from '../../../lib/auth/session';export const dynamic='force-dynamic';export default async function LivePage(){if(!await getServerSession())redirect('/login');return <main className="workspaceShell"><FuturesNav active="Live Trade"/><header className="portfolioHero"><span className="eyebrow">REAL ENVIRONMENT</span><h1>Live Trade</h1><p>Independent production trading runtimes.</p></header><TradeWorkspaceList environment="real"/></main>;}
+import { redirect } from 'next/navigation';
+import { getServerSession } from '../../../lib/auth/session';
+export const dynamic='force-dynamic';
+export default async function LegacyWorkspaceList(){if(!await getServerSession())redirect('/login');redirect('/futures/dashboard');}

@@ -14,6 +14,12 @@ const assignments:Record<string,{category:string;placeholders:string[]}>= {
   INITIAL_ADMIN_PASSWORD:{category:'ADMIN_PASSWORD',placeholders:['set_a_temporary_admin_password']}
 };
 
+for(const mode of ['DEVELOPMENT','TESTING','PRODUCTION']){
+  for(const key of ['MONGODB_URI','AUTH_SECRET','DELTA_API_KEY','DELTA_API_SECRET']){
+    assignments[`${key}_${mode}`]={category:`${key}_${mode}`,placeholders:['']};
+  }
+}
+
 export function scanTrackedFiles(files:string[]){
   const findings:Finding[]=[];
   for(const file of files){

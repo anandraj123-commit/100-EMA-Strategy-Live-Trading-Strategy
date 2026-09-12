@@ -1,15 +1,5 @@
-import dotenv from 'dotenv';
-import path from 'node:path';
-
-// The standalone tsx worker does NOT get Next.js' automatic .env.local loading.
-// Load it here before any config values are read.
-const envPath = path.resolve(process.cwd(), '.env.local');
-const envResult = dotenv.config({ path: envPath, override: false });
-
-if (envResult.error) {
-  console.warn(`[config] Could not load ${envPath}: ${envResult.error.message}`);
-}
-
+import { getModeConfig, getDeltaConfig } from './app-mode';
+const modeConfig = getModeConfig();
 
 export function resolutionToSeconds(resolution: string): number {
   const value = resolution.trim().toLowerCase();
@@ -28,14 +18,7 @@ export function resolutionToSeconds(resolution: string): number {
   return amount * multiplier;
 }
 
-const apiKey = (process.env.DELTA_API_KEY || '').trim();
-const apiSecret = (process.env.DELTA_API_SECRET || '').trim();
-
-console.log('[config] cwd:', process.cwd());
-console.log('[config] env file:', envPath);
-console.log('[config] DELTA_ENV:', process.env.DELTA_ENV || 'demo');
-console.log('[config] API KEY LOADED:', Boolean(apiKey));
-console.log('[config] API SECRET LOADED:', Boolean(apiSecret));
+const { apiKey, apiSecret } = modeConfig.delta;
 
 const resolutionRaw = (process.env.RESOLUTION || '5m').trim();
 const resolution = resolutionRaw.toLowerCase();
@@ -52,7 +35,8 @@ export function validateRiskBase(value:unknown):'available' {
 const riskBase=validateRiskBase((process.env.RISK_BASE||'available').trim().toLowerCase());
 
 export const config = {
-  env: (process.env.DELTA_ENV || 'demo') as 'demo' | 'live',
+  appMode: modeConfig.appMode,
+  env: modeConfig.delta.env,
   apiKey,
   apiSecret,
   symbol: process.env.SYMBOL || 'XAUTUSD',
@@ -80,20 +64,15 @@ export const config = {
   candleHistoryBars: Math.min(2000, Math.max(200, Number(process.env.EMA_LENGTH || 100) * 10 + Number(process.env.SLOPE_LOOKBACK || 3) + 10)),
 };
 
-export let baseUrl = config.env === 'live'
-  ? 'https://api.india.delta.exchange'
-  : 'https://cdn-ind.testnet.deltaex.org';
+export const baseUrl = modeConfig.delta.baseUrl;
 
 export type RuntimeEnvironment='real'|'demo';
-export function getDeltaEnvironment(environment:RuntimeEnvironment){const live=environment==='real';return {environment,baseUrl:live?'https://api.india.delta.exchange':'https://cdn-ind.testnet.deltaex.org',apiKey:(live?process.env.DELTA_LIVE_API_KEY:process.env.DELTA_DEMO_API_KEY)?.trim()||'',apiSecret:(live?process.env.DELTA_LIVE_API_SECRET:process.env.DELTA_DEMO_API_SECRET)?.trim()||'',credentialLabels:live?['DELTA_LIVE_API_KEY','DELTA_LIVE_API_SECRET'] as const:['DELTA_DEMO_API_KEY','DELTA_DEMO_API_SECRET'] as const};}
-export function configurePortfolioRuntime(environment:RuntimeEnvironment,symbol:string){
-  const resolved=getDeltaEnvironment(environment),live=environment==='real';
-  config.env=live?'live':'demo';
+// Compatibility parameter only: a legacy portfolio cannot select an endpoint.
+export function getDeltaEnvironment(_environment?:RuntimeEnvironment){return getDeltaConfig();}
+export function configurePortfolioRuntime(_environment:RuntimeEnvironment,symbol:string){
+  const resolved=getDeltaConfig();
   config.symbol=symbol;
-  config.apiKey=resolved.apiKey;
-  config.apiSecret=resolved.apiSecret;
-  baseUrl=resolved.baseUrl;
-  return {environment,credentialsConfigured:Boolean(config.apiKey&&config.apiSecret),baseUrl};
+  return {environment:resolved.environment,credentialsConfigured:true,baseUrl:resolved.baseUrl};
 }
 
 export function applyRuntimeConfigOverrides(values:Record<string,string|number|boolean>){
@@ -102,5 +81,4 @@ export function applyRuntimeConfigOverrides(values:Record<string,string|number|b
   for(const [key,value] of Object.entries(values)){const property=mapping[key];if(property)(config as Record<string,unknown>)[property]=value;}
   config.resolutionSec=resolutionToSeconds(config.resolution);
   config.candleHistoryBars=Math.min(2000,Math.max(200,config.emaLen*10+config.slopeLookback+10));
-  baseUrl=config.env==='live'?'https://api.india.delta.exchange':'https://cdn-ind.testnet.deltaex.org';
 }

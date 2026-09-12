@@ -560,6 +560,19 @@ async function refreshCandlesIfNeeded(nowSec:number) {
   return true;
 }
 
+class PortfolioProductModeMismatch extends Error {
+  readonly code = 'PORTFOLIO_PRODUCT_MODE_MISMATCH';
+  constructor(readonly storedProductId:number, readonly resolvedProductId:number|null) {
+    super('Portfolio product identity mismatch');
+    this.name = 'PortfolioProductModeMismatch';
+  }
+}
+
+function assertPortfolioProductCompatibility() {
+  const resolvedId=Number(product?.id);
+  if(resolvedId!==runtimeProductId)throw new PortfolioProductModeMismatch(runtimeProductId,Number.isFinite(resolvedId)?resolvedId:null);
+}
+
 async function cycle() {
   const decisionLogCycleStartedAt=Date.now();
   // The dashboard control is the master switch for NEW algo entries.
@@ -569,7 +582,7 @@ async function cycle() {
   const tradingEnabled = control.running === true;
 
   product ||= await getProduct(config.symbol);
-  if(Number(product?.id)!==runtimeProductId)throw new Error('Portfolio product identity mismatch');
+  assertPortfolioProductCompatibility();
   if (!product || product.state !== 'live' || product.trading_status !== 'operational') {
     throw new Error(`Product ${config.symbol} is not operational`);
   }
@@ -953,6 +966,7 @@ async function cycle() {
 
   writeStatus({
     portfolioId,
+    appMode:config.appMode,
     environment:runtimeEnvironment,
     running:robotRunningNow,
     updatedAt:new Date().toISOString(),
@@ -1064,9 +1078,9 @@ async function main() {
   if(!await portfolioEntryAllowed(portfolioId)){clearInterval(leaseHeartbeat);await closeMongoConnection().catch(()=>{});return;}
   const portfolio=await findPortfolioById(portfolioId);
   if(!portfolio)throw new Error('Portfolio runtime configuration not found');
-  runtimeEnvironment=portfolio.environment;
   runtimeProductId=portfolio.productId;
   const resolved=configurePortfolioRuntime(portfolio.environment,portfolio.symbol);
+  runtimeEnvironment=resolved.environment;
   runtimeFallbackSettings=runtimeConfigSnapshot();
   try {
     const overrides=validateRuntimeSettings(await getRuntimeSettingOverrides(portfolioId));
@@ -1078,10 +1092,9 @@ async function main() {
     addTradeEvent('RUNTIME_SETTINGS_FALLBACK',{source:'.env',reason:error?.message||String(error)});
   }
   if(!resolved.credentialsConfigured){
-    writeStatus({portfolioId,environment:portfolio.environment,symbol:portfolio.symbol,productId:portfolio.productId,running:false,credentialsConfigured:false,autoTrade:config.autoTrade,configuredAutoTrade:config.autoTrade,effectiveAutoTrade:false,currentStatus:{action:'STOPPED',reason:'CREDENTIALS_NOT_CONFIGURED'},message:'Credentials Not Configured',updatedAt:new Date().toISOString()},portfolioId);
+    writeStatus({portfolioId,appMode:config.appMode,environment:portfolio.environment,symbol:portfolio.symbol,productId:portfolio.productId,running:false,credentialsConfigured:false,autoTrade:config.autoTrade,configuredAutoTrade:config.autoTrade,effectiveAutoTrade:false,currentStatus:{action:'STOPPED',reason:'CREDENTIALS_NOT_CONFIGURED'},message:'Credentials Not Configured',updatedAt:new Date().toISOString()},portfolioId);
   }
-  await restoreCurrentDailyLossStreak();
-  try{await reconcileEntryIntents();}catch(error:any){addTradeEvent('ENTRY_RECONCILIATION_PENDING',{reason:error?.message||String(error)});blockingEntryIntent={state:'AMBIGUOUS',intentId:null,clientOrderId:null,status:'ENTRY_INTENT_LOOKUP_FAILED'};}
+  let runtimeRestored=false;
   while (!shuttingDown) {
     try {
       await refreshRuntimeSettings();
@@ -1090,9 +1103,22 @@ async function main() {
       // MongoDB remains authoritative and the next cycle retries the refresh.
     }
     try {
+      if(!runtimeRestored){
+        // Validate the stored identity on the selected endpoint before any
+        // restoration assumes it. Never remap or persist the resolved ID.
+        product ||= await getProduct(config.symbol);
+        assertPortfolioProductCompatibility();
+        await restoreCurrentDailyLossStreak();
+        try{await reconcileEntryIntents();}catch(error:any){addTradeEvent('ENTRY_RECONCILIATION_PENDING',{reason:error?.message||String(error)});blockingEntryIntent={state:'AMBIGUOUS',intentId:null,clientOrderId:null,status:'ENTRY_INTENT_LOOKUP_FAILED'};}
+        runtimeRestored=true;
+      }
       await cycle();
     } catch (e:any) {
       const classified=deltaErrorDetails(e),message=`${classified.code}: ${classified.message}`;
+      const productMismatch=e instanceof PortfolioProductModeMismatch?e:null;
+      const statusMessage=productMismatch
+        ? `Portfolio metadata incompatible with ${config.appMode.toUpperCase()} mode. Stored product ID ${productMismatch.storedProductId} does not match product ID ${productMismatch.resolvedProductId??'unavailable'} for ${config.symbol} on the selected Delta endpoint. The metadata may belong to a different Delta environment or no longer match this endpoint. No product ID was changed; review the portfolio metadata before restarting its worker.`
+        : message;
       const wasOnline = connectionState === 'online';
       connectionState = classified.network?'offline':'error';
       connectionError = message;
@@ -1105,6 +1131,7 @@ async function main() {
       // connectivity returns a normal successful cycle restores ONLINE state.
       writeStatus({
         portfolioId,
+        appMode:config.appMode,
         environment:runtimeEnvironment,
         credentialsConfigured:Boolean(config.apiKey&&config.apiSecret),
         running:readControl(portfolioId).running,
@@ -1114,8 +1141,12 @@ async function main() {
             autoTrade:config.autoTrade,
             configuredAutoTrade:config.autoTrade,
             effectiveAutoTrade:readControl(portfolioId).running===true&&config.autoTrade,
-        connection:{ state:connectionState,code:classified.code, lastOnlineAt, lastOfflineAt, error:connectionError, consecutiveFailures:consecutiveNetworkFailures },
-        error:message,
+        connection:{ state:connectionState,code:productMismatch?.code??classified.code, lastOnlineAt, lastOfflineAt, error:statusMessage, consecutiveFailures:consecutiveNetworkFailures },
+        error:statusMessage,
+        ...(productMismatch?{
+          currentStatus:{action:'UNAVAILABLE',reason:productMismatch.code},
+          productCompatibility:{portfolioId,symbol:config.symbol,storedProductId:productMismatch.storedProductId,resolvedProductId:productMismatch.resolvedProductId,appMode:config.appMode}
+        }:{}),
         tradeEvents,
         logs:uiLogs
       },portfolioId);

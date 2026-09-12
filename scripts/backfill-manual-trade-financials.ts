@@ -1,9 +1,5 @@
-import path from 'node:path';
-import dotenv from 'dotenv';
 import { getDb } from '../lib/db/mongodb';
 import { backfillClosedManualFinancials } from '../lib/trades/manual-financial-backfill';
-
-dotenv.config({path:path.resolve(process.cwd(),'.env.local'),override:false});
 
 async function main(){
   const mode=process.argv[2];

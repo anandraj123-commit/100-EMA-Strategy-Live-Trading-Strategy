@@ -10,11 +10,6 @@ export function classifyDeltaError(input:{error?:unknown;status?:number;payload?
 export function deltaErrorDetails(error:unknown){const code=classifyDeltaError({error});return {code,message:messages[code],network:code==='DELTA_NETWORK_OFFLINE'||code==='DELTA_NETWORK_TIMEOUT'};}
 const failure=(input:{error?:unknown;status?:number;payload?:unknown})=>new DeltaRequestError(classifyDeltaError(input),input.status);
 export type PortfolioEnvironment = 'real' | 'demo';
-const PUBLIC_MARKET_URLS: Record<PortfolioEnvironment, string> = {
-  real: 'https://api.india.delta.exchange',
-  demo: 'https://cdn-ind.testnet.deltaex.org'
-};
-
 async function deltaFetch(url: string, init: RequestInit) {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
@@ -50,7 +45,7 @@ export async function publicGet(path: string, params?: Record<string, string | n
 }
 
 async function publicMarketGet(environment: PortfolioEnvironment, path: string) {
-  const res = await deltaFetch(PUBLIC_MARKET_URLS[environment] + path, {
+  const res = await deltaFetch(getDeltaEnvironment(environment).baseUrl + path, {
     headers: { Accept: 'application/json', 'User-Agent': 'xautusd-nextjs-portfolio' },
     cache: 'no-store'
   });

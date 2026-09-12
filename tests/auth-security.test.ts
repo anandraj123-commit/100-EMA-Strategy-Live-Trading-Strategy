@@ -5,7 +5,7 @@ import { GET as getStatus } from '../app/api/status/route';
 import { POST as postControl } from '../app/api/control/route';
 import { getCsrfToken, setSessionCookie, verifyCsrf } from '../lib/auth/session';
 
-process.env.AUTH_SECRET = 'test-only-auth-secret-with-at-least-32-characters';
+process.env.AUTH_SECRET_TESTING = 'test-only-auth-secret-with-at-least-32-characters';
 
 test('dashboard status rejects an unauthenticated direct request', async () => {
   const response = await getStatus(new NextRequest('http://localhost/api/status'));

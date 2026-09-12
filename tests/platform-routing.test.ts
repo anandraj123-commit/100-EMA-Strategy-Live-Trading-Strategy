@@ -11,9 +11,15 @@ test('authenticated platform home links futures and keeps options disabled',()=>
   assert.doesNotMatch(home,/href="\/options"/);
 });
 
-test('futures route is authenticated and renders portfolio, live, and demo workspaces',()=>{
+test('futures route is authenticated and renders portfolio and application trading workspace',()=>{
   const futures=fs.readFileSync(path.join(process.cwd(),'app/futures/page.tsx'),'utf8');
-  assert.match(futures,/getServerSession/);assert.match(futures,/redirect\('\/login'\)/);for(const label of ['PORTFOLIO','LIVE TRADE','DEMO TRADE'])assert.match(futures,new RegExp(label));assert.match(futures,/href="\/futures\/portfolio"/);
+  assert.match(futures,/getServerSession/);assert.match(futures,/redirect\('\/login'\)/);for(const label of ['PORTFOLIO','TRADE'])assert.match(futures,new RegExp(label));assert.match(futures,/href="\/futures\/portfolio"/);
 });
 
-test('portfolio and environment-specific dashboard routes are authenticated',()=>{const portfolio=fs.readFileSync(path.join(process.cwd(),'app/futures/portfolio/page.tsx'),'utf8'),live=fs.readFileSync(path.join(process.cwd(),'app/futures/live/[portfolioId]/page.tsx'),'utf8'),demo=fs.readFileSync(path.join(process.cwd(),'app/futures/demo/[portfolioId]/page.tsx'),'utf8');assert.match(portfolio,/getServerSession/);assert.match(portfolio,/PortfolioManager/);for(const route of [live,demo]){assert.match(route,/getServerSession/);assert.match(route,/TradingDashboard/);assert.match(route,/findPortfolioById/);}assert.match(live,/environment!=='real'/);assert.match(demo,/environment!=='demo'/);});
+test('portfolio and canonical dashboard routes are authenticated; legacy URLs redirect without selecting mode',()=>{
+  const portfolio=fs.readFileSync('app/futures/portfolio/page.tsx','utf8');
+  const dashboard=fs.readFileSync('app/futures/dashboard/[portfolioId]/page.tsx','utf8');
+  assert.match(portfolio,/getServerSession/);assert.match(portfolio,/PortfolioManager/);
+  assert.match(dashboard,/getServerSession/);assert.match(dashboard,/findPortfolioById/);assert.match(dashboard,/TradingDashboard/);
+  for(const route of ['live','demo']){const source=fs.readFileSync(`app/futures/${route}/[portfolioId]/page.tsx`,'utf8');assert.match(source,/getServerSession/);assert.match(source,/redirect/);assert.match(source,/futures\/dashboard/);assert.doesNotMatch(source,/portfolio.environment/);}
+});

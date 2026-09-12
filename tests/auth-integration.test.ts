@@ -17,9 +17,9 @@ test('MongoDB authentication lifecycle and atomic rate limiting', { skip: !testM
   const mongo = new MongoClient(testMongoUri as string);
 
   process.chdir(temporaryDirectory);
-  process.env.MONGODB_URI = testMongoUri;
-  process.env.MONGODB_DB = databaseName;
-  process.env.AUTH_SECRET = 'integration-test-secret-with-at-least-32-characters';
+  process.env.MONGODB_URI_TESTING = testMongoUri;
+  process.env.MONGODB_DB_TESTING = databaseName;
+  process.env.AUTH_SECRET_TESTING = 'integration-test-secret-with-at-least-32-characters';
   process.env.TRUST_PROXY_IP_HEADERS = 'false';
 
   try {

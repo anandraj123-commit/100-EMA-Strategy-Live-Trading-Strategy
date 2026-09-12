@@ -1,12 +1,14 @@
 'use client';
 
+import AppModeBadge from './AppModeBadge';
+import type { AppMode } from '../lib/app-mode';
 import { useEffect, useState } from 'react';
 import { autoTradeStatus, calculateCurrentPnL, effectiveAutoTrade, paginateItems } from '../lib/dashboard';
 import DecisionLogRow from './DecisionLogRow';
 
 const tabs=['Environment Variables','Profit','History','Decision Log','Trade / Synchronisation Events','Pending Setup','Active Trade','Strategy / Guardrails','Latest Decision'] as const;
 
-export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
+export default function TradingDashboard({portfolioId,appMode}:{portfolioId:string;appMode:AppMode}) {
   const portfolioQuery=`portfolioId=${encodeURIComponent(portfolioId)}`;
   const [s, setS] = useState<any>({});
   const [controlBusy, setControlBusy] = useState(false);
@@ -126,8 +128,9 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
   }
 
   const running = s.running === true;
+  const statusUnavailable = s.statusAvailable === false;
   const deltaOnline = s.connection?.state === undefined || s.connection?.state === 'online';
-  const deltaConnectionLabel=deltaOnline?'DELTA ONLINE':s.connection?.state==='offline'?'DELTA OFFLINE · RECONNECTING':`${String(s.connection?.code||'DELTA ERROR').replaceAll('_',' ')} · RETRYING`;
+  const deltaConnectionLabel=statusUnavailable?'WORKER STATUS UNAVAILABLE':deltaOnline?'DELTA ONLINE':s.connection?.state==='offline'?'DELTA OFFLINE · RECONNECTING':`${String(s.connection?.code||'DELTA ERROR').replaceAll('_',' ')} · RETRYING`;
   const autoTrade = autoTradeStatus(s.effectiveAutoTrade);
   const money=(value:any)=>value==null?'—':Number(value).toFixed(4);
   const coveredValue=(scope:any,valueField:string,completeField:string)=>scope?.totalTrades===0?'0.0000':scope?.[completeField]?money(scope[valueField]):'—';
@@ -163,11 +166,11 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
   }
 
   const cards = [
-    ['Robot Status', running ? 'RUNNING' : 'STOPPED'],
-    ['Delta Connection', deltaOnline ? 'ONLINE' : 'OFFLINE'],
-    ['Delta Monitoring', deltaOnline ? 'CONNECTED / ACTIVE' : 'RECONNECTING…'],
+    ['Robot Status', statusUnavailable ? 'UNAVAILABLE' : running ? 'RUNNING' : 'STOPPED'],
+    ['Delta Connection', statusUnavailable ? 'UNAVAILABLE' : deltaOnline ? 'ONLINE' : 'OFFLINE'],
+    ['Delta Monitoring', statusUnavailable ? 'FRESH WORKER STATUS REQUIRED' : deltaOnline ? 'CONNECTED / ACTIVE' : 'RECONNECTING…'],
     ['New Algo Entries', running ? 'ENABLED' : 'DISABLED'],
-    ['Environment', s.env],
+    ['Application Mode', appMode.toUpperCase()],
     ['Symbol', s.symbol],
     ['Resolution', s.strategy?.resolution],
     ['Strategy Price', s.price],
@@ -193,7 +196,7 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
   return (
     <main>
       <div className="dashboardHead">
-        <h1>{s.symbol||'PORTFOLIO'} <span>// DELTA {s.environment==='demo'?'DEMO':'LIVE'} ALGO</span></h1>
+        <h1>{s.symbol||'PORTFOLIO'} <span>// DELTA ALGO</span> <AppModeBadge appMode={appMode}/></h1>
         <button type="button" className="logout" onClick={logout} disabled={!csrfToken || controlBusy}>LOG OUT</button>
       </div>
 
@@ -232,7 +235,7 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
         )}
       </div>
 
-      {s.error && <pre className="error">{s.error}</pre>}
+      {s.error && <pre className="error" role="alert">{s.error}</pre>}
 
       <section>
         {cards.map(([label, value, tone]) => (
