@@ -10,7 +10,7 @@ import TradingDashboard from '../components/TradingDashboard';
 import { getAppMode } from '../lib/app-mode';
 import { getCsrfToken } from '../lib/auth/session';
 import { GET as status } from '../app/api/status/route';
-import { GET as list, POST as create } from '../app/api/portfolio/route';
+import { GET as list, POST as create, DELETE as remove } from '../app/api/portfolio/route';
 import { PUT as editSettings } from '../app/api/settings/route';
 
 // Existing components rely on Next's automatic JSX runtime. The test runner's
@@ -58,6 +58,10 @@ test('authenticated API creates/selects portfolios in instance mode, rejects mod
     const created=await create(request({symbol:' btcusd '}));assert.equal(created.status,201);
     const saved=(await created.json()).portfolio;assert.equal(saved.symbol,'BTCUSD');assert.equal(saved.appMode,'testing');assert.equal(saved.environment,'demo');
     assert.equal(settings.size,1);
+    const before=JSON.stringify(rows);
+    const denied=await remove(new NextRequest('http://localhost/api/portfolio',{method:'DELETE',headers,body:JSON.stringify({id:saved.id})}));
+    assert.equal(denied.status,405);assert.match((await denied.json()).error,/deletion is not allowed/);
+    assert.equal(JSON.stringify(rows),before);assert.equal(settings.size,1);
     assert.equal((await create(request({symbol:'BTCUSD'}))).status,409);
     // Legacy stored environment is not rewritten and cannot affect selection.
     rows[0].environment='real';

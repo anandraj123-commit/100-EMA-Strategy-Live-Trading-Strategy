@@ -21,4 +21,4 @@ export async function insertPortfolio(document:Omit<PortfolioDocument,'_id'>){
   await rows.insertOne(portfolio);
   return portfolio;
 }
-export async function deletePortfolio(id:string){if(!ObjectId.isValid(id))return false;return (await (await collection()).deleteOne({_id:new ObjectId(id)})).deletedCount===1;}
+export async function deletePortfolio(_id:string){return false;} // Portfolios are permanent.

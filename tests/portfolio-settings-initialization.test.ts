@@ -96,9 +96,9 @@ test('creation initializes all allowed defaults, preserves edits, and isolates w
     assert.equal(wa.config.emaLen,125);assert.equal(wa.config.rr,6);assert.equal(wa.config.riskPct,3);
     assert.equal(wb.config.emaLen,definitions.runtimeSettingDefaults().EMA_LENGTH);
     const restarted=worker(aid);await restarted.refreshRuntimeSettings();assert.equal(restarted.config.emaLen,125);
-    await portfolios.deletePortfolio(aid);
-    assert.ok(stored.has(`portfolio:${aid}`)); // Preserve existing deletion semantics.
-    const c=await create('AAAUSD');assert.notEqual(c._id.toHexString(),aid);
+    assert.equal(await portfolios.deletePortfolio(aid),false);
+    assert.ok(stored.has(`portfolio:${aid}`)); // A rejected deletion preserves settings.
+    const c=await create('CCCUSD');assert.notEqual(c._id.toHexString(),aid);
     const wc=worker(c._id.toHexString());await wc.refreshRuntimeSettings();
     assert.equal(wc.config.emaLen,definitions.runtimeSettingDefaults().EMA_LENGTH);
     assert.deepEqual(await settings.getRuntimeSettingOverrides(bid),definitions.runtimeSettingDefaults());
