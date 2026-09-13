@@ -21,16 +21,21 @@ const executable=ts.transpileModule(workerWithoutLauncher+`
   effectiveRuntimeSettings={...runtimeFallbackSettings};
   configRevision=runtimeSettingsRevision(effectiveRuntimeSettings);
   dailyLossStateReady=true; currentDay=tradingDayKey();
-  module.exports={cycle, inspect:()=>({pending,activeTrade,uiLogs,tradeEvents}),
+  module.exports={cycle, openTradeProtectionPriceSource, inspect:()=>({pending,activeTrade,uiLogs,tradeEvents}),
     refreshRuntimeSettings,
     seedExistingPosition:(size)=>{activeTrade={direction:size>0?'long':'short',positionSize:size,
       contracts:Math.abs(size),entryPrice:100,source:'exchange_existing',attributionStatus:'UNKNOWN',
       orderId:'existing-order',sl:90,tp:110};}};
 `,{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText;
 
-export function workerHarness(options:{entryValidCandles?:number;emaLen?:number;slopeLookback?:number}={}) {
+export function verificationWorker(options:{entryValidCandles?:number;emaLen?:number;slopeLookback?:number}={}) {
   let now=1_800_000, candles:strategy.Candle[]=[], price=100, running=true;
   let status:any;
+  let confirmedIntents:any[]=[],reconciliationCount=0;
+  const closed:any[]=[];
+  let settingsValues:Record<string,any>={VERIFIED:true};
+  let settingsRevision="legacy",settingsReads=0;
+  let onRead:((read:number)=>void)|undefined;
   let positionSize=0;
   let failPersistence=false;
   const positionReads:number[]=[];
@@ -43,13 +48,14 @@ export function workerHarness(options:{entryValidCandles?:number;emaLen?:number;
   const yes=async()=>true;
   const modules:Record<string,any>={
     './lib/config':{config,applyRuntimeConfigOverrides:(next:any)=>{
-      const names:Record<string,string>={AUTO_TRADE:'autoTrade',VERIFIED:'verified',POLL_MS:'pollMs'};
+      const names:Record<string,string>={AUTO_TRADE:'autoTrade',VERIFIED:'verified',POLL_MS:'pollMs',RESOLUTION:'resolution',EMA_LENGTH:'emaLen',RR:'rr',RISK_PCT:'riskPct',PRICE_SOURCE:'priceSource'};
       for(const [key,name] of Object.entries(names))if(key in next)(config as any)[name]=next[key];
+      config.resolutionSec=Number(config.resolution.slice(0,-1))*(config.resolution.endsWith('m')?60:3600);
     }},
     './lib/strategy':strategy,'./lib/pending':pendingRules,'./lib/runtime/final-preorder':finalSafety,
     './lib/settings/live':settings,
     './lib/settings/definitions':{validateRuntimeSettings:(values:any)=>values},
-    './lib/settings/repository':{getRuntimeSettingsSnapshot:async()=>({values:{VERIFIED:true},entryRevision:'legacy'})},
+    './lib/settings/repository':{getRuntimeSettingsSnapshot:async()=>{onRead?.(++settingsReads);return {values:{...settingsValues},entryRevision:settingsRevision};}},
     './lib/state':{readControl:()=>({running}),writeControl:(control:any)=>{running=control.running;},writeStatus:(value:any)=>{status=value;}},
     './lib/delta':{
       getProduct:async()=>({id:27,state:'live',trading_status:'operational',contract_value:0.1,tick_size:0.5,taker_commission_rate:0.0005}),
@@ -66,7 +72,7 @@ export function workerHarness(options:{entryValidCandles?:number;emaLen?:number;
     },
     './lib/trades/repository':{findUnresolvedBotTrades:empty,findUnresolvedManualTrades:empty,
       updateTradeProtectionState:async()=>{}},
-    './lib/trades/persistence':{persistClosedTrade:async()=>({tradeId:'existing',financialStatus:'actual'}),persistOpenBotTrade:async(trade:any)=>{if(failPersistence)throw new Error('test persistence unavailable');persisted.push({...trade});return {tradeId:'trade-1'};}},
+    './lib/trades/persistence':{persistClosedTrade:async(trade:any)=>{closed.push(trade);return {tradeId:'existing',financialStatus:'actual'};},persistOpenBotTrade:async(trade:any)=>{if(failPersistence)throw new Error('test persistence unavailable');persisted.push({...trade});return {tradeId:'trade-1'};}},
     './lib/portfolio/deletion-state':{portfolioEntryAllowed:yes},
     './lib/portfolio/repository':{findPortfolioById:async()=>({_id:'contract',environment:'demo',symbol:'XAUTUSD',productId:27})},
     './lib/runtime/leases':{newLeaseOwner:()=> 'owner',portfolioEntryLeaseKey:()=> 'portfolio-entry',
@@ -76,7 +82,7 @@ export function workerHarness(options:{entryValidCandles?:number;emaLen?:number;
     './lib/entry-intents/identity':{entryIntentId:()=> 'intent-1',entryClientOrderId:()=> 'client-1'},
     './lib/entry-intents/repository':{findRecoverableConfirmedEntryIntents:empty,findBlockingEntryIntent:async()=>null,markEntryIntentOwnershipPersisted:async()=>{}},
     './lib/entry-intents/service':{
-      reconcilePortfolioEntryIntents:async()=>({confirmed:[]}),
+      reconcilePortfolioEntryIntents:async()=>{reconciliationCount++;const confirmed=confirmedIntents;confirmedIntents=[];return {confirmed};},
       submitPreparedEntryIntent:async(intent:any,submit:any)=>{intents.push(intent);return {status:'CONFIRMED',order:await submit(intent.clientOrderId)};},
       EntryNotTransmittedError:class extends Error{}
     },
@@ -96,7 +102,13 @@ export function workerHarness(options:{entryValidCandles?:number;emaLen?:number;
     require:(name:string)=>{assert.ok(name in modules,`Unexpected worker import: ${name}`);return modules[name];}
   },{filename:'worker.contract.js'});
   return {
-    config,orders,brackets,intents,persisted,leverages,
+    config,orders,brackets,intents,persisted,leverages,closed,
+    protectionSource:()=>module.exports.openTradeProtectionPriceSource(),
+    confirmed:(intents:any[])=>{confirmedIntents=intents;},
+    reconciliations:()=>reconciliationCount,
+    settings:(values:Record<string,any>,revision:string)=>{settingsValues=values;settingsRevision=revision;},
+    onSettingsRead:(callback:(read:number)=>void)=>{onRead=callback;},
+    refresh:()=>module.exports.refreshRuntimeSettings(),
     failOpenPersistence:()=>{failPersistence=true;},
     existingPosition:(size:number)=>{positionSize=size;module.exports.seedExistingPosition(size);},
     setPosition:(size:number)=>{positionSize=size;},

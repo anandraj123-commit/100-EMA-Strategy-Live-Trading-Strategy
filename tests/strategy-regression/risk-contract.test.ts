@@ -5,7 +5,7 @@ import { finalPreOrderSafetyCheck, type FinalPreOrderDependencies, type FinalPre
 const input:FinalPreOrderInput={
   identity:{portfolioId:'contract',environment:'demo',symbol:'XAUTUSD',productId:27},
   setup:{direction:'long',trigger:100,sl:90,candleTime:1200,configRevision:'contract'},
-  config:{revision:'contract',autoTrade:true,entryValidCandles:2,resolutionSec:300,riskPct:1,rr:2,minStopPct:0,maxEffectiveLeverage:100,maxFeeRiskPct:100,gstPct:18},
+  config:{revision:'contract',autoTrade:true,verified:true,entryValidCandles:2,resolutionSec:300,riskPct:1,rr:2,minStopPct:0,maxEffectiveLeverage:100,maxFeeRiskPct:100,gstPct:18},
   product:{id:27,contractValue:0.3,tickSize:0.5,takerRate:0.0005}
 };
 const dependencies=(candidate:FinalPreOrderInput,available=1000):FinalPreOrderDependencies=>({

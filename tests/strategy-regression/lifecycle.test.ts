@@ -159,7 +159,7 @@ test('expired pending permits a new opposite signal, but the new signal cannot e
 
 test('final order barrier independently blocks T0, permits T1/T2, and rejects T3',async()=>{
   const setup={direction:'long' as const,trigger:100,sl:90,candleTime:T0,configRevision:'rev'};
-  const config={revision:'rev',autoTrade:true,entryValidCandles:2,resolutionSec:resolution,riskPct:1,rr:2,minStopPct:0,maxEffectiveLeverage:100,maxFeeRiskPct:20,gstPct:18};
+  const config={revision:'rev',autoTrade:true,verified:true,entryValidCandles:2,resolutionSec:resolution,riskPct:1,rr:2,minStopPct:0,maxEffectiveLeverage:100,maxFeeRiskPct:20,gstPct:18};
   const input={identity:{portfolioId:'p',environment:'demo' as const,symbol:'XAUTUSD',productId:27},setup,config,product:{id:27,contractValue:0.1,tickSize:0.5,takerRate:0.0005}};
   for(const index of [0,1,2,3]) {
     let marketCalls=0;

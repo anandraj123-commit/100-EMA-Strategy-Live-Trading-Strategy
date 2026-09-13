@@ -48,7 +48,7 @@ test('portfolio list attaches only each ID’s runtime and cards preserve fields
  const service=execute(fs.readFileSync('lib/portfolio/service.ts','utf8'),{
   '../app-mode':{getAppMode:()=> 'testing',getDeltaConfig:()=>({environment:'demo'})},
   '../delta':{getPublicTicker:async()=>({close:100})},'./repository':{},
-  '../state':{readStatus:(id:string)=>{reads.push(id);return statuses[id];}},'./card-status':{portfolioCardRuntime}
+  '../settings/status':{readPortfolioRuntimeStatus:async(id:string)=>{reads.push(id);return statuses[id];}},'./card-status':{portfolioCardRuntime}
  });
  const rows=await service.portfolioWithPrices(['a','b','c'].map((id,i)=>({_id:{toHexString:()=>id},symbol:['BTCUSD','ETHUSD','XRPUSD'][i],productId:i+1,name:'Perpetual',contractValue:1,settlingAsset:'USD',underlyingAsset:'BTC',environment:'demo'})));
  assert.deepEqual(reads,['a','b','c']);assert.deepEqual(Array.from(rows,(r:any)=>({...r.runtime,expiresAt:0})),[

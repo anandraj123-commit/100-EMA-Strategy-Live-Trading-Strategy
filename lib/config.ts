@@ -53,6 +53,7 @@ export const config = {
   maxFeeRiskPct: Number(process.env.MAX_FEE_RISK_PCT || 20),
   gstPct: Number(process.env.GST_PCT || 18),
   orderLeverage: Number(process.env.ORDER_LEVERAGE || 100),
+  verified: false, // Approval comes only from per-portfolio MongoDB settings.
   autoTrade: (process.env.AUTO_TRADE || 'false').toLowerCase() === 'true',
   riskBase,
   // Delta chart's 'Traded Price' corresponds to the ticker last traded price.
@@ -77,7 +78,7 @@ export function configurePortfolioRuntime(_environment:RuntimeEnvironment,symbol
 
 export function applyRuntimeConfigOverrides(values:Record<string,string|number|boolean>){
   if('RISK_BASE' in values)validateRiskBase(values.RISK_BASE);
-  const mapping:Record<string,keyof typeof config>={RESOLUTION:'resolution',AUTO_TRADE:'autoTrade',POLL_MS:'pollMs',EMA_LENGTH:'emaLen',SLOPE_LOOKBACK:'slopeLookback',ENTRY_VALID_CANDLES:'entryValidCandles',RR:'rr',RISK_PCT:'riskPct',RISK_BASE:'riskBase',MAX_DAILY_CONSECUTIVE_LOSSES:'maxDailyLosses',MIN_STOP_PCT:'minStopPct',MAX_EFFECTIVE_LEVERAGE:'maxEffectiveLeverage',MAX_FEE_RISK_PCT:'maxFeeRiskPct',GST_PCT:'gstPct',ORDER_LEVERAGE:'orderLeverage',PRICE_SOURCE:'priceSource'};
+  const mapping:Record<string,keyof typeof config>={RESOLUTION:'resolution',AUTO_TRADE:'autoTrade',VERIFIED:'verified',POLL_MS:'pollMs',EMA_LENGTH:'emaLen',SLOPE_LOOKBACK:'slopeLookback',ENTRY_VALID_CANDLES:'entryValidCandles',RR:'rr',RISK_PCT:'riskPct',RISK_BASE:'riskBase',MAX_DAILY_CONSECUTIVE_LOSSES:'maxDailyLosses',MIN_STOP_PCT:'minStopPct',MAX_EFFECTIVE_LEVERAGE:'maxEffectiveLeverage',MAX_FEE_RISK_PCT:'maxFeeRiskPct',GST_PCT:'gstPct',ORDER_LEVERAGE:'orderLeverage',PRICE_SOURCE:'priceSource'};
   for(const [key,value] of Object.entries(values)){const property=mapping[key];if(property)(config as Record<string,unknown>)[property]=value;}
   config.resolutionSec=resolutionToSeconds(config.resolution);
   config.candleHistoryBars=Math.min(2000,Math.max(200,config.emaLen*10+config.slopeLookback+10));

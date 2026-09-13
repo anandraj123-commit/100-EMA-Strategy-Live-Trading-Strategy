@@ -101,7 +101,7 @@ test('worker and dashboard expose configured and effective AUTO_TRADE separately
   assert.match(worker,/effectiveAutoTrade:robotRunningNow&&config\.autoTrade/);
   assert.match(dashboard,/autoTradeStatus\(s\.effectiveAutoTrade\)/);
   assert.match(dashboard,/effectiveAutoTrade:effectiveAutoTrade\(running,prev\.configuredAutoTrade\)/);
-  assert.doesNotMatch(control,/saveRuntimeSettingOverrides|runtime_settings|AUTO_TRADE/);
+  assert.doesNotMatch(control,/saveRuntimeSettingOverrides|runtime_settings/);
 });
 
 test('AUTO_TRADE hot reload accepts persisted boolean transitions and retains the effective fallback when absent',()=>{
@@ -113,7 +113,7 @@ test('AUTO_TRADE hot reload accepts persisted boolean transitions and retains th
 
 test('worker refreshes portfolio runtime settings before each cycle without restarting or changing open-trade state',()=>{
   const source=fs.readFileSync(path.join(process.cwd(),'worker.ts'),'utf8');
-  assert.match(source,/async function refreshRuntimeSettings\(\)[\s\S]*?getRuntimeSettingOverrides\(portfolioId\)[\s\S]*?changedRuntimeSettings/);
+  assert.match(source,/async function refreshRuntimeSettings\(\)[\s\S]*?getRuntimeSettingsSnapshot\(portfolioId\)[\s\S]*?changedRuntimeSettings/);
   assert.match(source,/while \(!shuttingDown\) \{\s*try \{\s*await refreshRuntimeSettings\(\)/);
   const refreshBody=source.match(/async function refreshRuntimeSettings\(\)\{([\s\S]*?)\n\}/)?.[1]||'';
   assert.equal(refreshBody.includes('activeTrade='),false);

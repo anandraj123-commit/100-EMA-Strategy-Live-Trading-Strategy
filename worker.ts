@@ -2,11 +2,11 @@ import { portfolioEntryAllowed } from './lib/portfolio/deletion-state';
 import { applyRuntimeConfigOverrides, config, configurePortfolioRuntime } from './lib/config';
 import { emaSeries, evaluateSetup } from './lib/strategy';
 import { DeltaRequestError,deltaErrorDetails,getCandles, getProduct, getTicker, getWallet, getPosition, getOpenOrders, getFillsBounded, getOrderHistoryBounded, toDeltaMicroseconds, placeMarketOrder, placeBracket, placeProtectiveStopOrder, setLeverage } from './lib/delta';
-import { readControl, writeStatus } from './lib/state';
+import { readControl, writeControl, writeStatus } from './lib/state';
 import { persistClosedTrade as persistClosedTradeBase, persistOpenBotTrade as persistOpenBotTradeBase, persistOpenManualTrade as persistOpenManualTradeBase } from './lib/trades/persistence';
 import { findLegacyUnresolvedTrades,findOpenBotTrade as findOpenBotTradeBase, findOpenManualTrades as findOpenManualTradesBase, findUnresolvedBotTrades as findUnresolvedBotTradesBase, findUnresolvedManualTrades as findUnresolvedManualTradesBase, markTradeReconciling,synchronizeTradeProtection,updateTradeProtectionState } from './lib/trades/repository';
 import { classifyBotExitEvidence, deltaTimestampMilliseconds, findBotCloseBoundary, findTradeCloseBoundary, reconstructOpenManualLifecycles, resolvePositionOwnership, stableTradeId as stableTradeIdBase, type BotExitOutcome } from './lib/trades/reconciliation';
-import { getRuntimeSettingOverrides } from './lib/settings/repository';
+import { getRuntimeSettingsSnapshot } from './lib/settings/repository';
 import { validateRuntimeSettings } from './lib/settings/definitions';
 import { changedRuntimeSettings, pendingInvalidatingKeys, runtimeSettingsRevision, strategyStateKeys } from './lib/settings/live';
 import { findPortfolioById, listPortfolio } from './lib/portfolio/repository';
@@ -79,6 +79,7 @@ let consecutiveNetworkFailures = 0;
 let effectiveRuntimeSettings:Record<string,string|number|boolean>={};
 let runtimeFallbackSettings:Record<string,string|number|boolean>={};
 let configRevision='';
+let entrySettingsRevision='legacy';
 let strategyStateReady=false;
 let blockingEntryIntent:any=null;
 let shuttingDown=false;
@@ -103,7 +104,7 @@ const protectionRepairAttempts = new Set<string>();
 const POSITION_REFRESH_MS = 5_000;
 const WALLET_REFRESH_MS = 30_000;
 
-function runtimeConfigSnapshot(){return {RESOLUTION:config.resolution,AUTO_TRADE:config.autoTrade,POLL_MS:config.pollMs,EMA_LENGTH:config.emaLen,SLOPE_LOOKBACK:config.slopeLookback,ENTRY_VALID_CANDLES:config.entryValidCandles,RR:config.rr,RISK_PCT:config.riskPct,RISK_BASE:config.riskBase,MAX_DAILY_CONSECUTIVE_LOSSES:config.maxDailyLosses,MIN_STOP_PCT:config.minStopPct,MAX_EFFECTIVE_LEVERAGE:config.maxEffectiveLeverage,MAX_FEE_RISK_PCT:config.maxFeeRiskPct,GST_PCT:config.gstPct,ORDER_LEVERAGE:config.orderLeverage,PRICE_SOURCE:config.priceSource};}
+function runtimeConfigSnapshot(){return {RESOLUTION:config.resolution,AUTO_TRADE:config.autoTrade,VERIFIED:config.verified,POLL_MS:config.pollMs,EMA_LENGTH:config.emaLen,SLOPE_LOOKBACK:config.slopeLookback,ENTRY_VALID_CANDLES:config.entryValidCandles,RR:config.rr,RISK_PCT:config.riskPct,RISK_BASE:config.riskBase,MAX_DAILY_CONSECUTIVE_LOSSES:config.maxDailyLosses,MIN_STOP_PCT:config.minStopPct,MAX_EFFECTIVE_LEVERAGE:config.maxEffectiveLeverage,MAX_FEE_RISK_PCT:config.maxFeeRiskPct,GST_PCT:config.gstPct,ORDER_LEVERAGE:config.orderLeverage,PRICE_SOURCE:config.priceSource};}
 function botStrategyConfigSnapshot(){return {resolution:config.resolution,emaLength:config.emaLen,slopeLookback:config.slopeLookback,entryValidCandles:config.entryValidCandles,rr:config.rr,riskPct:config.riskPct,riskBase:config.riskBase,orderLeverage:config.orderLeverage,maxEffectiveLeverage:config.maxEffectiveLeverage,priceSource:config.priceSource,configRevision};}
 const CANDLE_CLOSE_GRACE_SEC = 2;
 const BRACKET_SYNC_MS = 5_000;
@@ -335,6 +336,14 @@ function numeric(v:any):number|null {
   return Number.isFinite(n) ? n : null;
 }
 
+const protectionPriceSources=new WeakMap<object,'mark'|'last'|'spot'>();
+function openTradeProtectionPriceSource(){
+  if(!activeTrade)return config.priceSource;
+  let source=protectionPriceSources.get(activeTrade);
+  if(!source){source=activeTrade.strategyConfig?.priceSource??config.priceSource;protectionPriceSources.set(activeTrade,source!);}
+  return source!;
+}
+
 async function syncExchangeBracket(force = false) {
   if (!product || !activeTrade || cachedPositionSize === 0) return;
   const now = Date.now();
@@ -349,7 +358,7 @@ async function syncExchangeBracket(force = false) {
     }
     return true;
   };
-  const triggerMethod = protectionTriggerMethod(config.priceSource);
+  const triggerMethod = protectionTriggerMethod(openTradeProtectionPriceSource());
   await reconcileProtection(Number(product.id), triggerMethod, {
     trade: () => activeTrade,
     position: () => getPosition(Number(product.id)),
@@ -579,7 +588,7 @@ async function cycle() {
   // Monitoring stays alive even when the robot is stopped so an already-open
   // Delta position, its SL/TP and its eventual close continue to update on UI.
   const control = readControl(portfolioId);
-  const tradingEnabled = control.running === true;
+  const tradingEnabled = control.running === true && config.autoTrade && config.verified === true;
 
   product ||= await getProduct(config.symbol);
   assertPortfolioProductCompatibility();
@@ -865,8 +874,8 @@ async function cycle() {
             } else {
               const side:'buy'|'sell' = pending.direction === 'long' ? 'buy' : 'sell';
               const entrySetup={direction:pending.direction,trigger:Number(pending.trigger),sl:Number(pending.sl),candleTime:Number(pending.candleTime),configRevision:entryConfigRevision};
-              const finalInput=()=>({identity:{portfolioId,environment:runtimeEnvironment!,symbol:config.symbol,productId:runtimeProductId},setup:entrySetup,config:{revision:entryConfigRevision,autoTrade:config.autoTrade,entryValidCandles:config.entryValidCandles,resolutionSec:config.resolutionSec,riskPct:config.riskPct,rr:config.rr,minStopPct:config.minStopPct,maxEffectiveLeverage:config.maxEffectiveLeverage,maxFeeRiskPct:config.maxFeeRiskPct,gstPct:config.gstPct},product:{id:Number(product.id),contractValue:Number(product.contract_value),tickSize:Number(product.tick_size||0.01),takerRate:Number(product.taker_commission_rate??0.0005)}});
-              const finalDependencies=()=>({currentConfig:()=>({...finalInput().config,revision:configRevision}),dailyLossEntryAllowed:()=>dailyLossEntryAllowed(dailyLossStateReady,lossStreak,config.maxDailyLosses),robotRunning:()=>!shuttingDown&&readControl(portfolioId).running===true,refreshConfig:async()=>{await refreshRuntimeSettings();return {revision:configRevision,autoTrade:config.autoTrade,entryValidCandles:config.entryValidCandles,resolutionSec:config.resolutionSec,riskPct:config.riskPct,rr:config.rr,minStopPct:config.minStopPct,maxEffectiveLeverage:config.maxEffectiveLeverage,maxFeeRiskPct:config.maxFeeRiskPct,gstPct:config.gstPct};},currentPending:()=>pending,latestCompletedCandleTime:()=>Math.max(Number(completedCandles.at(-1)?.time||0),Math.floor(Date.now()/1000/config.resolutionSec)*config.resolutionSec-config.resolutionSec),leaseOwned:()=>verifyLeaseOwnership(entryLease),leaseLost:()=>entryExecution.ownershipLost(),portfolioEntryAllowed:async()=>!shuttingDown&&await portfolioEntryAllowed(portfolioId)&&await renewLease(portfolioEntryLease,90_000)&&await verifyLeaseOwnership(portfolioEntryLease),portfolio:async()=>{const current=await findPortfolioById(portfolioId);return current?{id:String(current._id),environment:current.environment,symbol:current.symbol,productId:current.productId}:null;},position:async()=>{const position=await getPosition(runtimeProductId);const size=explicitPositionSize(position);if(size!==null)observeEntryPosition(size);return position;},availableMargin:async()=>{const wallet=await getWallet(),usd=(wallet?.result||[]).find((w:any)=>w.asset_symbol==='USD')||(wallet?.result||[])[0];return Number(usd?.available_balance_for_robo||usd?.available_balance||0);}});
+              const finalInput=()=>({identity:{portfolioId,environment:runtimeEnvironment!,symbol:config.symbol,productId:runtimeProductId},setup:entrySetup,config:{revision:entryConfigRevision,autoTrade:config.autoTrade,verified:config.verified,entryValidCandles:config.entryValidCandles,resolutionSec:config.resolutionSec,riskPct:config.riskPct,rr:config.rr,minStopPct:config.minStopPct,maxEffectiveLeverage:config.maxEffectiveLeverage,maxFeeRiskPct:config.maxFeeRiskPct,gstPct:config.gstPct},product:{id:Number(product.id),contractValue:Number(product.contract_value),tickSize:Number(product.tick_size||0.01),takerRate:Number(product.taker_commission_rate??0.0005)}});
+              const finalDependencies=()=>({currentConfig:()=>({...finalInput().config,revision:configRevision}),dailyLossEntryAllowed:()=>dailyLossEntryAllowed(dailyLossStateReady,lossStreak,config.maxDailyLosses),robotRunning:()=>!shuttingDown&&readControl(portfolioId).running===true,refreshConfig:async()=>{await refreshRuntimeSettings();return {revision:configRevision,autoTrade:config.autoTrade,verified:config.verified,entryValidCandles:config.entryValidCandles,resolutionSec:config.resolutionSec,riskPct:config.riskPct,rr:config.rr,minStopPct:config.minStopPct,maxEffectiveLeverage:config.maxEffectiveLeverage,maxFeeRiskPct:config.maxFeeRiskPct,gstPct:config.gstPct};},currentPending:()=>pending,latestCompletedCandleTime:()=>Math.max(Number(completedCandles.at(-1)?.time||0),Math.floor(Date.now()/1000/config.resolutionSec)*config.resolutionSec-config.resolutionSec),leaseOwned:()=>verifyLeaseOwnership(entryLease),leaseLost:()=>entryExecution.ownershipLost(),portfolioEntryAllowed:async()=>!shuttingDown&&await portfolioEntryAllowed(portfolioId)&&await renewLease(portfolioEntryLease,90_000)&&await verifyLeaseOwnership(portfolioEntryLease),portfolio:async()=>{const current=await findPortfolioById(portfolioId);return current?{id:String(current._id),environment:current.environment,symbol:current.symbol,productId:current.productId}:null;},position:async()=>{const position=await getPosition(runtimeProductId);const size=explicitPositionSize(position);if(size!==null)observeEntryPosition(size);return position;},availableMargin:async()=>{const wallet=await getWallet(),usd=(wallet?.result||[]).find((w:any)=>w.asset_symbol==='USD')||(wallet?.result||[])[0];return Number(usd?.available_balance_for_robo||usd?.available_balance||0);}});
               const finalSafety=await finalPreOrderSafetyCheck(finalInput(),finalDependencies());
               if(!finalSafety.ok){decision={action:'SKIP',reason:finalSafety.reason};addTradeEvent(finalSafety.reason,{direction:entrySetup.direction,signalCandleTime:entrySetup.candleTime,...('guard'in finalSafety?{guard:finalSafety.guard}:{})});return;}
               const identity={portfolioId,environment:runtimeEnvironment!,productId:Number(product.id),side,signalCandleTime:Number(pending.candleTime),configRevision:entryConfigRevision};
@@ -955,7 +964,7 @@ async function cycle() {
   });
 
   const latestControl = readControl(portfolioId);
-  const robotRunningNow = latestControl.running === true;
+  const robotRunningNow = latestControl.running === true && config.autoTrade && config.verified === true;
 
   const recovered = connectionState === 'offline';
   connectionState = 'online';
@@ -973,9 +982,11 @@ async function cycle() {
     connection:{ state:'online', lastOnlineAt, lastOfflineAt, error:null, consecutiveFailures:0 },
     env:config.env,
     autoTrade:config.autoTrade,
+    verified:config.verified,
     configuredAutoTrade:config.autoTrade,
     effectiveAutoTrade:robotRunningNow&&config.autoTrade,
     configRevision,
+    entryRevision:entrySettingsRevision,
     strategyStateReady,
     symbol:config.symbol,
     productId:product.id,
@@ -1026,7 +1037,7 @@ async function cycle() {
     currentStatus: !robotRunningNow
       ? cachedPositionSize !== 0
         ? { action:'STOPPED', reason:'POSITION_STILL_OPEN', source:activeTrade?.source || 'exchange', at:new Date().toISOString() }
-        : { action:'STOPPED', reason:'ROBOT_STOPPED', at:new Date().toISOString() }
+        : { action:'STOPPED', reason:!config.verified?'ENVIRONMENT_NOT_VERIFIED':!config.autoTrade?'AUTO_TRADE_OFF':'ROBOT_STOPPED', at:new Date().toISOString() }
       : cachedPositionSize !== 0
         ? activeTrade?.source === 'exchange_existing'
           ? { action:'ACTIVE', reason:'EXISTING_POSITION', source:'exchange_existing', at:new Date().toISOString() }
@@ -1040,13 +1051,24 @@ async function cycle() {
   },portfolioId);
 }
 
+function stopUnpermittedEntries(){
+  pending=null;
+  entrySignalsBlockedThrough=Math.max(entrySignalsBlockedThrough,lastSetupCandle,Math.floor(Date.now()/1000/config.resolutionSec)*config.resolutionSec-config.resolutionSec);
+  if(readControl(portfolioId).running===true)writeControl({running:false},portfolioId);
+}
+
 async function refreshRuntimeSettings(){
-  const overrides=validateRuntimeSettings(await getRuntimeSettingOverrides(portfolioId));
-  const next={...runtimeFallbackSettings,...overrides};
+  let snapshot,overrides;
+  try{snapshot=await getRuntimeSettingsSnapshot(portfolioId);overrides=validateRuntimeSettings(snapshot.values);}
+  catch(error){config.verified=false;stopUnpermittedEntries();throw error;}
+  const next:Record<string,string|number|boolean>={...runtimeFallbackSettings,...overrides,VERIFIED:overrides.VERIFIED===true};
+  const generationChanged=entrySettingsRevision!==snapshot.entryRevision;
+  if(next.VERIFIED!==true||next.AUTO_TRADE!==true){config.verified=false;stopUnpermittedEntries();}
   const changed=changedRuntimeSettings(effectiveRuntimeSettings,next);
-  if(!changed.length)return false;
-  const oldConfigRevision=configRevision,newConfigRevision=runtimeSettingsRevision(next);
-  const invalidatesPending=changed.some(key=>pendingInvalidatingKeys.has(key));
+  if(!changed.length&&!generationChanged){config.verified=next.VERIFIED===true;return false;}
+  const oldConfigRevision=configRevision,newConfigRevision=runtimeSettingsRevision({...next,ENTRY_REVISION:snapshot.entryRevision});
+  const invalidatesPending=generationChanged||changed.some(key=>pendingInvalidatingKeys.has(key));
+  if(invalidatesPending)entrySignalsBlockedThrough=Math.max(entrySignalsBlockedThrough,lastSetupCandle,Math.floor(Date.now()/1000/config.resolutionSec)*config.resolutionSec-config.resolutionSec);
   const rebuildsStrategy=changed.some(key=>strategyStateKeys.has(key));
   if(invalidatesPending&&pending){
     addTradeEvent('PENDING_CANCELLED_CONFIG_CHANGE',{direction:pending.direction,trigger:pending.trigger,signalCandleTime:pending.candleTime,oldConfigRevision,newConfigRevision,changedSettings:changed});
@@ -1060,8 +1082,10 @@ async function refreshRuntimeSettings(){
     lastSetupCandle=0;
     addTradeEvent('STRATEGY_STATE_REBUILDING',{oldConfigRevision,newConfigRevision,changedSettings:changed});
   }
+  if(activeTrade)openTradeProtectionPriceSource();
   applyRuntimeConfigOverrides(next);
   effectiveRuntimeSettings=next;
+  entrySettingsRevision=snapshot.entryRevision;
   configRevision=newConfigRevision;
   addTradeEvent('RUNTIME_CONFIG_UPDATED',{oldConfigRevision,newConfigRevision,changedSettings:changed});
   if(!rebuildsStrategy)addTradeEvent('STRATEGY_STATE_READY',{configRevision});
@@ -1083,23 +1107,25 @@ async function main() {
   runtimeEnvironment=resolved.environment;
   runtimeFallbackSettings=runtimeConfigSnapshot();
   try {
-    const overrides=validateRuntimeSettings(await getRuntimeSettingOverrides(portfolioId));
-    effectiveRuntimeSettings={...runtimeFallbackSettings,...overrides};
+    const snapshot=await getRuntimeSettingsSnapshot(portfolioId);
+    const overrides=validateRuntimeSettings(snapshot.values);
+    entrySettingsRevision=snapshot.entryRevision;
+    effectiveRuntimeSettings={...runtimeFallbackSettings,...overrides,VERIFIED:overrides.VERIFIED===true};
     applyRuntimeConfigOverrides(effectiveRuntimeSettings);
-    configRevision=runtimeSettingsRevision(effectiveRuntimeSettings);
+    configRevision=runtimeSettingsRevision({...effectiveRuntimeSettings,ENTRY_REVISION:entrySettingsRevision});
     if(Object.keys(overrides).length)addTradeEvent('RUNTIME_SETTINGS_LOADED',{count:Object.keys(overrides).length,source:'MongoDB',appliedAt:'WORKER_START'});
   } catch(error:any) {
     addTradeEvent('RUNTIME_SETTINGS_FALLBACK',{source:'.env',reason:error?.message||String(error)});
   }
   if(!resolved.credentialsConfigured){
-    writeStatus({portfolioId,appMode:config.appMode,environment:portfolio.environment,symbol:portfolio.symbol,productId:portfolio.productId,running:false,credentialsConfigured:false,autoTrade:config.autoTrade,configuredAutoTrade:config.autoTrade,effectiveAutoTrade:false,currentStatus:{action:'STOPPED',reason:'CREDENTIALS_NOT_CONFIGURED'},message:'Credentials Not Configured',updatedAt:new Date().toISOString()},portfolioId);
+    writeStatus({portfolioId,appMode:config.appMode,environment:portfolio.environment,symbol:portfolio.symbol,productId:portfolio.productId,running:false,credentialsConfigured:false,autoTrade:config.autoTrade,verified:config.verified,configuredAutoTrade:config.autoTrade,effectiveAutoTrade:false,currentStatus:{action:'STOPPED',reason:'CREDENTIALS_NOT_CONFIGURED'},message:'Credentials Not Configured',updatedAt:new Date().toISOString()},portfolioId);
   }
   let runtimeRestored=false;
   while (!shuttingDown) {
     try {
       await refreshRuntimeSettings();
     } catch {
-      // Keep the last effective value and continue monitoring/trading safely.
+      // Entries fail closed; existing-position monitoring and protection continue.
       // MongoDB remains authoritative and the next cycle retries the refresh.
     }
     try {
@@ -1134,13 +1160,14 @@ async function main() {
         appMode:config.appMode,
         environment:runtimeEnvironment,
         credentialsConfigured:Boolean(config.apiKey&&config.apiSecret),
-        running:readControl(portfolioId).running,
+        running:readControl(portfolioId).running===true&&config.autoTrade&&config.verified,
         updatedAt:new Date().toISOString(),
         env:config.env,
             symbol:config.symbol,
             autoTrade:config.autoTrade,
+            verified:config.verified,
             configuredAutoTrade:config.autoTrade,
-            effectiveAutoTrade:readControl(portfolioId).running===true&&config.autoTrade,
+            effectiveAutoTrade:readControl(portfolioId).running===true&&config.autoTrade&&config.verified,
         connection:{ state:connectionState,code:productMismatch?.code??classified.code, lastOnlineAt, lastOfflineAt, error:statusMessage, consecutiveFailures:consecutiveNetworkFailures },
         error:statusMessage,
         ...(productMismatch?{

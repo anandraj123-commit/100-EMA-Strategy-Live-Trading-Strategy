@@ -24,14 +24,17 @@ const foreign={appMode:'production',env:'live',running:true,price:98765432,markP
 
 async function readThroughApi(snapshot:unknown){
   let reads=0;
-  const route=execute(fs.readFileSync('app/api/status/route.ts','utf8'),{
-    '../../../lib/app-mode':{getAppMode:()=> 'testing'},
-    '../../../lib/runtime/status-mode':{validateStatusMode},
+  const reader=execute(fs.readFileSync('lib/settings/status.ts','utf8'),{
+    '../app-mode':{getAppMode:()=> 'testing'},
+    '../runtime/status-mode':{validateStatusMode},
     'next/server':{NextResponse:{json:(body:unknown)=>body}},
-    '../../../lib/state':{readStatus:()=>{reads++;return snapshot;}},
+    './repository':{getRuntimeSettingsSnapshot:async()=>({values:{VERIFIED:true,AUTO_TRADE:true},entryRevision:'legacy'})},
+    './definitions':{runtimeSettingDefaults:()=>({})},
+    '../state':{readControl:()=>({running:true}),readStatus:()=>{reads++;return snapshot;}},
     '../../../lib/auth/api':{requireApiSession:async()=>({ok:true})},
     '../../../lib/portfolio/access':{resolvePortfolioId:async()=>({_id:{toHexString:()=> 'portfolio-id'}})}
   });
+  const route=execute(fs.readFileSync('app/api/status/route.ts','utf8'),{'../../../lib/settings/status':reader,'next/server':{NextResponse:{json:(body:unknown)=>body}},'../../../lib/auth/api':{requireApiSession:async()=>({ok:true})},'../../../lib/portfolio/access':{resolvePortfolioId:async()=>({_id:{toHexString:()=> 'portfolio-id'}})}});
   const response=await route.GET({nextUrl:{searchParams:{get:()=> 'portfolio-id'}}});
   assert.equal(reads,1);
   return response;
@@ -48,9 +51,9 @@ test('status API rejects Production snapshot under Testing without relabelling o
 });
 
 test('matching status is returned intact without overwriting worker metadata',async()=>{
-  const snapshot={...foreign,appMode:'testing',env:'demo'},original=structuredClone(snapshot);
+  const snapshot={...foreign,appMode:'testing',env:'demo',entryRevision:'legacy',verified:true,effectiveAutoTrade:true},original=structuredClone(snapshot);
   const response=await readThroughApi(snapshot);
-  assert.equal(response,snapshot);assert.deepEqual(response,original);assert.equal(response.running,true);
+  assert.deepEqual(structuredClone(response),original);assert.equal(response.running,true);
 });
 
 test('legacy, absent, malformed or invalid-mode status is untrusted and never modified',async()=>{
@@ -126,7 +129,7 @@ function startup(mode:AppMode,storedId:number,resolvedId:number,options:{credent
   modules['./lib/portfolio/deletion-state']={portfolioEntryAllowed:async()=>true};
   modules['./lib/portfolio/repository']={findPortfolioById:async()=>portfolio};
   modules['./lib/runtime/leases']={portfolioLeaseKey:()=> 'lease',renewLease:async()=>true};
-  modules['./lib/settings/repository']={getRuntimeSettingOverrides:async()=>({})};
+  modules['./lib/settings/repository']={getRuntimeSettingsSnapshot:async()=>({values:{VERIFIED:true},entryRevision:'legacy'})};
   modules['./lib/settings/definitions']={validateRuntimeSettings:(values:any)=>values};
   modules['./lib/settings/live']=liveSettings;
   modules['./lib/db/mongodb']={closeMongoConnection:async()=>{events.push('close');}};
@@ -134,7 +137,7 @@ function startup(mode:AppMode,storedId:number,resolvedId:number,options:{credent
   modules['./lib/risk/daily-loss-streak']={tradingDayKey:()=> 'test-day',restoreDailyLossStreak:async()=>{events.push('restore');return{consecutiveLosses:0,tradingDay:'test-day'};}};
   modules['./lib/entry-intents/service']={reconcilePortfolioEntryIntents:async()=>{events.push('reconcile');return{confirmed:[]};}};
   modules['./lib/entry-intents/repository']={findRecoverableConfirmedEntryIntents:async()=>[],findBlockingEntryIntent:async()=>null};
-  modules['./lib/state']={readControl:()=>({running:true}),writeStatus:(snapshot:any)=>{snapshots.push(snapshot);if(!('credentialsConfigured' in snapshot)||snapshot.connection)stop();}};
+  modules['./lib/state']={readControl:()=>({running:true}),writeControl:()=>{},writeStatus:(snapshot:any)=>{snapshots.push(snapshot);if(!('credentialsConfigured' in snapshot)||snapshot.connection)stop();}};
   const worker=execute(workerSource+'\nmodule.exports={main,cycle,stop:()=>{shuttingDown=true;},inspect:()=>({runtimeProductId,product})};',modules,{
     process:{env:{PORTFOLIO_RUNTIME_ID:'portfolio-id',PORTFOLIO_RUNTIME_LEASE_OWNER:'owner'},once:()=>{}},
     setInterval:()=>0,clearInterval:()=>{},setTimeout:(callback:()=>void)=>{callback();return 0;}

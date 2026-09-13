@@ -53,7 +53,7 @@ test('portfolio deletion is permanently disabled and legacy safety remains intac
   await t.test('final entry barrier observes durable deletion and submits zero orders',async()=>{
     const f=fixture(),id=String(f.p1._id);f.table('portfolio_deletions').set(id,{_id:id,portfolio:f.p1,state:'deleted'});let orders=0;
     const setup={direction:'long' as const,trigger:100,sl:90,candleTime:1000,configRevision:'r'};
-    const config={revision:'r',autoTrade:true,entryValidCandles:2,resolutionSec:60,riskPct:1,rr:8,minStopPct:0,maxEffectiveLeverage:100,maxFeeRiskPct:20,gstPct:18};
+    const config={revision:'r',autoTrade:true,verified:true,entryValidCandles:2,resolutionSec:60,riskPct:1,rr:8,minStopPct:0,maxEffectiveLeverage:100,maxFeeRiskPct:20,gstPct:18};
     const checked=await finalPreOrderSafetyCheck({identity:{portfolioId:id,environment:'demo',symbol:'XAUTUSD',productId:27},setup,config,product:{id:27,contractValue:0.01,tickSize:0.5,takerRate:0.0005}},{robotRunning:()=>true,refreshConfig:async()=>config,currentPending:()=>setup,latestCompletedCandleTime:()=>1060,leaseOwned:async()=>true,leaseLost:()=>false,portfolioEntryAllowed:()=>portfolioEntryAllowed(id),portfolio:async()=>null,position:async()=>({size:0}),availableMargin:async()=>1000});
     if(checked.ok)orders++;
     assert.deepEqual(checked,{ok:false,reason:'FINAL_PREORDER_DELETION_IN_PROGRESS'});assert.equal(orders,0);

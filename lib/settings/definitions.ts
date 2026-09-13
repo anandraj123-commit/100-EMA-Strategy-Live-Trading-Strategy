@@ -20,6 +20,7 @@ const numberSetting = (key:string,label:string,defaultValue:number,min:number,ma
 const choiceSetting=(key:string,label:string,defaultValue:string,choices:string[]):SettingDefinition=>({key,label,type:'string',defaultValue,restartRequired:false,validate(value){if(typeof value!=='string'||!choices.includes(value))throw new Error(`${key} must be one of: ${choices.join(', ')}`);return value;}});
 
 export const runtimeSettingDefinitions:SettingDefinition[]=[
+  {key:'VERIFIED',label:'Verified',type:'boolean',defaultValue:false,restartRequired:false,validate(value){if(typeof value!=='boolean')throw new Error('VERIFIED must be boolean');return value;}},
   {key:'RESOLUTION',label:'Resolution',type:'string',defaultValue:config.resolution,restartRequired:false,validate(value){if(typeof value!=='string')throw new Error('RESOLUTION must be a string');resolutionToSeconds(value);return value.toLowerCase();}},
   {key:'AUTO_TRADE',label:'Auto trade',type:'boolean',defaultValue:config.autoTrade,restartRequired:false,validate(value){if(typeof value!=='boolean')throw new Error('AUTO_TRADE must be boolean');return value;}},
   numberSetting('POLL_MS','Poll interval (ms)',config.pollMs,250,60_000,true),

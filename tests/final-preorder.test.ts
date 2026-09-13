@@ -4,7 +4,7 @@ import { finalPreOrderSafetyCheck,type FinalPreOrderDependencies } from '../lib/
 import { EntryNotTransmittedError,submitPreparedEntryIntent } from '../lib/entry-intents/service';
 
 const setup={direction:'long' as const,trigger:100,sl:90,candleTime:1_000,configRevision:'rev'};
-const config={revision:'rev',autoTrade:true,entryValidCandles:2,resolutionSec:60,riskPct:1,rr:8,minStopPct:0,maxEffectiveLeverage:100,maxFeeRiskPct:20,gstPct:18};
+const config={revision:'rev',autoTrade:true,verified:true,entryValidCandles:2,resolutionSec:60,riskPct:1,rr:8,minStopPct:0,maxEffectiveLeverage:100,maxFeeRiskPct:20,gstPct:18};
 const input={identity:{portfolioId:'p1',environment:'demo' as const,symbol:'BTCUSD',productId:27},setup,config,product:{id:27,contractValue:0.01,tickSize:0.5,takerRate:0.0005}};
 function harness(overrides:Partial<FinalPreOrderDependencies>={}){let positionCalls=0,marginCalls=0;const deps:FinalPreOrderDependencies={robotRunning:()=>true,refreshConfig:async()=>config,currentPending:()=>setup,latestCompletedCandleTime:()=>1_119,leaseOwned:async()=>true,leaseLost:()=>false,portfolioEntryAllowed:async()=>true,portfolio:async()=>({id:'p1',environment:'demo',symbol:'BTCUSD',productId:27}),position:async()=>{positionCalls++;return{size:0}},availableMargin:async()=>{marginCalls++;return 1_000},...overrides};return{deps,positionCalls:()=>positionCalls,marginCalls:()=>marginCalls};}
 async function failureReason(value:ReturnType<typeof finalPreOrderSafetyCheck>){const result=await value;return result.ok?null:result.reason;}

@@ -1,5 +1,4 @@
 import { portfolioEntryAllowed } from '../../../lib/portfolio/deletion-state';
-import { acquireLease,newLeaseOwner,portfolioEntryLeaseKey,releaseLease } from '../../../lib/runtime/leases';
 import { NextRequest, NextResponse } from 'next/server';
 import { requireApiSession } from '../../../lib/auth/api';
 import { runtimeSettingDefaults, runtimeSettingMetadata, validateRuntimeSettings } from '../../../lib/settings/definitions';
@@ -20,12 +19,10 @@ export async function PUT(req:NextRequest){
     if(!body||typeof body!=='object'||Array.isArray(body)||Object.keys(body).some(key=>!['values','portfolioId'].includes(key)))throw new Error('Request must contain values and portfolioId');
     const portfolio=await resolvePortfolioId((body as {portfolioId?:unknown}).portfolioId);if(!portfolio)return NextResponse.json({error:'Portfolio not found'},{status:404});
     const values=validateRuntimeSettings((body as {values?:unknown}).values);
-    const id=portfolio._id!.toHexString(),lease=await acquireLease(portfolioEntryLeaseKey(id),newLeaseOwner('settings'),30_000);
-    if(!lease)return NextResponse.json({error:'Portfolio entry or deletion is in progress.'},{status:409});
-    try{
+    const id=portfolio._id!.toHexString();
       if(!await portfolioEntryAllowed(id))return NextResponse.json({error:'Portfolio deletion has begun.'},{status:409});
       const saved=await saveRuntimeSettingOverrides(values,auth.session.user.email,id);
       return NextResponse.json({...saved,values:{...runtimeSettingDefaults(),...saved.values},restartRequired:false});
-    }finally{await releaseLease(lease);}
-  }catch(error:any){return NextResponse.json({error:error?.message||'Invalid settings'},{status:400});}
+
+  }catch(error:any){const message=error?.message||'Invalid settings';return NextResponse.json({error:message},{status:message==='Portfolio entry or settings update is in progress.'||message==='Portfolio settings lease lost'?409:400});}
 }

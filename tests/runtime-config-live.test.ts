@@ -12,11 +12,11 @@ test('runtime setting snapshots detect one atomic transition and remain stable o
   assert.notEqual(runtimeSettingsRevision(oldSettings),runtimeSettingsRevision(newSettings));
 });
 
-test('strategy, risk and execution changes invalidate pending while AUTO_TRADE and POLL_MS retain it',()=>{
+test('all editable runtime changes and verification invalidate pending',()=>{
   for(const key of ['RESOLUTION','EMA_LENGTH','SLOPE_LOOKBACK','ENTRY_VALID_CANDLES']){assert.equal(strategyStateKeys.has(key),true);assert.equal(pendingInvalidatingKeys.has(key),true);}
   for(const key of ['RR','RISK_PCT','RISK_BASE','MIN_STOP_PCT','MAX_EFFECTIVE_LEVERAGE','MAX_FEE_RISK_PCT','GST_PCT','ORDER_LEVERAGE','PRICE_SOURCE'])assert.equal(pendingInvalidatingKeys.has(key),true);
-  assert.equal(pendingInvalidatingKeys.has('AUTO_TRADE'),false);
-  assert.equal(pendingInvalidatingKeys.has('POLL_MS'),false);
+  assert.equal(pendingInvalidatingKeys.has('AUTO_TRADE'),true);
+  assert.equal(pendingInvalidatingKeys.has('POLL_MS'),true);
 });
 
 test('worker atomically rebuilds strategy state and checks config generation inside the existing entry path',()=>{

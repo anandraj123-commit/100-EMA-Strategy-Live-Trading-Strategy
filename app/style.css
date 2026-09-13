@@ -22,3 +22,10 @@
 .portfolioCard .portfolioPnl.positive{color:#32d583}
 .portfolioCard .portfolioPnl.negative{color:#ff6363}
 .portfolioCard .portfolioPnl.neutral{color:inherit}
+
+.settingsPanel .verifiedToggle{justify-self:end;min-width:64px;padding:7px 12px;border-radius:6px;color:#fff}
+.settingsPanel .verifiedToggle.on{background:#166534}
+.settingsPanel .verifiedToggle.off{background:#991b1b}
+.portfolioCard .portfolioRobotDot.running{animation:portfolioRobotPulse 1.5s ease-in-out infinite}
+@keyframes portfolioRobotPulse{50%{opacity:.45}}
+@media(prefers-reduced-motion:reduce){.portfolioCard .portfolioRobotDot.running{animation:none}}
