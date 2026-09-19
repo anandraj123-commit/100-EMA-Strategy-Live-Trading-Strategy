@@ -8,6 +8,7 @@ export const dynamic='force-dynamic';
 export default async function Workspace({params}:{params:Promise<{portfolioId:string}>}){
   if(!await getServerSession())redirect('/login');
   const {portfolioId}=await params;
-  if(!await findPortfolioById(portfolioId))notFound();
-  return <><FuturesNav active="Trade"/><TradingDashboard portfolioId={portfolioId} appMode={getAppMode()}/></>;
+  const portfolio=await findPortfolioById(portfolioId);
+  if(!portfolio)notFound();
+  return <><FuturesNav active="Trade"/><TradingDashboard key={portfolioId} symbol={portfolio.symbol} portfolioId={portfolioId} appMode={getAppMode()}/></>;
 }

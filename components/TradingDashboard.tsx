@@ -1,14 +1,15 @@
 'use client';
 
+import BacktestingOptimisation from './BacktestingOptimisation';
 import AppModeBadge from './AppModeBadge';
 import type { AppMode } from '../lib/app-mode';
 import { useEffect, useState } from 'react';
 import { autoTradeStatus, calculateCurrentPnL, effectiveAutoTrade, paginateItems } from '../lib/dashboard';
 import DecisionLogRow from './DecisionLogRow';
 
-const tabs=['Environment Variables','Profit','History','Decision Log','Trade / Synchronisation Events','Pending Setup','Active Trade','Strategy / Guardrails','Latest Decision'] as const;
+const tabs=['Environment Variables','Backtesting & Optimisation','Profit','History','Decision Log','Trade / Synchronisation Events','Pending Setup','Active Trade','Strategy / Guardrails','Latest Decision'] as const;
 
-export default function TradingDashboard({portfolioId,appMode}:{portfolioId:string;appMode:AppMode}) {
+export default function TradingDashboard({portfolioId,appMode,symbol}:{portfolioId:string;appMode:AppMode;symbol?:string}) {
   const portfolioQuery=`portfolioId=${encodeURIComponent(portfolioId)}`;
   const [s, setS] = useState<any>({});
   const [controlBusy, setControlBusy] = useState(false);
@@ -26,6 +27,7 @@ export default function TradingDashboard({portfolioId,appMode}:{portfolioId:stri
   const [settingsEditing,setSettingsEditing]=useState(false);
   const [settingsBusy,setSettingsBusy]=useState(false);
   const [settingsError,setSettingsError]=useState('');
+  const [researchOpened,setResearchOpened]=useState(false);
 
   async function load() {
     try {
@@ -52,9 +54,9 @@ export default function TradingDashboard({portfolioId,appMode}:{portfolioId:stri
     } catch { /* retain the last history view during a temporary failure */ }
   }
 
-  async function loadSettings(){
+  async function loadSettings(preserveDraft=false){
     setSettingsError('');
-    try{const response=await fetch(`/api/settings?${portfolioQuery}`,{cache:'no-store'});if(response.status===401||response.status===403){if(response.status===401)window.location.replace('/login');throw new Error('Administrator access is required');}if(!response.ok)throw new Error(`Settings request failed: HTTP ${response.status}`);const data=await response.json();setSettings(data.definitions||[]);setSettingValues(data.values||{});setSavedSettingValues(data.values||{});}catch(error:any){setSettingsError(error?.message||'Unable to load settings');}
+    try{const response=await fetch(`/api/settings?${portfolioQuery}`,{cache:'no-store'});if(response.status===401||response.status===403){if(response.status===401)window.location.replace('/login');throw new Error('Administrator access is required');}if(!response.ok)throw new Error(`Settings request failed: HTTP ${response.status}`);const data=await response.json();setSettings(data.definitions||[]);if(!preserveDraft)setSettingValues(data.values||{});setSavedSettingValues(data.values||{});return true;}catch(error:any){setSettingsError(error?.message||'Unable to load settings');return false;}
   }
 
   useEffect(() => {
@@ -247,8 +249,11 @@ export default function TradingDashboard({portfolioId,appMode}:{portfolioId:stri
       </section>
 
       <nav className="dashboardTabs" aria-label="Dashboard sections">
-        {tabs.map(tab=><button type="button" key={tab} className={activeTab===tab?'active':''} aria-selected={activeTab===tab} onClick={()=>setActiveTab(tab)}>{tab}</button>)}
+        {tabs.map(tab=><button type="button" key={tab} className={activeTab===tab?'active':''} aria-selected={activeTab===tab} onClick={async()=>{setActiveTab(tab);if(tab==='Backtesting & Optimisation'&&!researchOpened&&await loadSettings(true))setResearchOpened(true);}}>{tab}</button>)}
       </nav>
+
+      {activeTab==='Backtesting & Optimisation'&&!researchOpened&&<p role={settingsError?'alert':'status'}>{settingsError||'Loading saved Portfolio settings…'}</p>}
+      {researchOpened&&settings.length>0&&<div hidden={activeTab!=='Backtesting & Optimisation'}><BacktestingOptimisation portfolioId={portfolioId} symbol={symbol||s.symbol||'BTCUSD'} saved={savedSettingValues} onTransfer={(sourceId,draft)=>{if(sourceId!==portfolioId||settingsBusy)return;setSettingValues(values=>({...values,...draft}));setSettingsEditing(true);setSettingsError('');setActiveTab('Environment Variables');}}/></div>}
 
       {activeTab==='Environment Variables'&&<div className="panel settingsPanel"><div className="panelHead"><div><h2>Environment Variables</h2><p>Safe Portfolio settings apply live. Relevant changes cancel pending setups and rebuild strategy state.</p></div>{!settingsEditing?<button type="button" onClick={()=>setSettingsEditing(true)} disabled={!settings.length}>Enable Edit</button>:<div className="inlineButtons"><button type="button" onClick={saveSettings} disabled={settingsBusy}>{settingsBusy?'Saving…':'Save'}</button><button type="button" className="secondary" onClick={()=>{setSettingValues(savedSettingValues);setSettingsEditing(false);setSettingsError('');}} disabled={settingsBusy}>Cancel</button></div>}</div>{settingsError&&<p className="settingsError">{settingsError}</p>}<div className="settingsGrid">{settings.map((definition:any)=><label key={definition.key}><span>{definition.label}<small>{definition.key} · {definition.restartRequired?'restart required':'applies live'}</small>{definition.key==='VERIFIED'&&<small>{settingValues.VERIFIED===true?'Settings verified.':'Review and verify settings before robot can start.'}</small>}</span>{definition.key==='VERIFIED'?<button type="button" className={`verifiedToggle ${settingValues.VERIFIED===true?'on':'off'}`} role="switch" aria-label="Verified" aria-checked={settingValues.VERIFIED===true} disabled={!settingsEditing||settingsBusy} onClick={()=>setSettingValues(values=>({...values,VERIFIED:values.VERIFIED!==true}))}>{settingValues.VERIFIED===true?'ON':'OFF'}</button>:definition.type==='boolean'?<select disabled={!settingsEditing} value={String(settingValues[definition.key])} onChange={event=>setSettingValues(values=>({...values,[definition.key]:event.target.value==='true'}))}><option value="true">true</option><option value="false">false</option></select>:<input disabled={!settingsEditing} type={definition.type==='number'?'number':'text'} value={String(settingValues[definition.key]??'')} onChange={event=>setSettingValues(values=>({...values,[definition.key]:definition.type==='number'?Number(event.target.value):event.target.value}))}/>}</label>)}</div>{!settings.length&&!settingsError&&<p>Loading settings…</p>}</div>}
 

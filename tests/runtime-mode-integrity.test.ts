@@ -81,6 +81,7 @@ function renderDashboard(snapshot:unknown,appMode:AppMode='testing'){
   const component=execute(fs.readFileSync('components/TradingDashboard.tsx','utf8'),{
     'react/jsx-runtime':require('react/jsx-runtime'),
     react:{...React,useState:(value:unknown)=>[++state===1?snapshot:value,()=>{}],useEffect:()=>{}},
+    './BacktestingOptimisation':{default:()=>null,__esModule:true},
     './AppModeBadge':{default:AppModeBadge,__esModule:true},
     '../lib/dashboard':dashboard,
     './DecisionLogRow':{default:()=>null,__esModule:true}
