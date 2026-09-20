@@ -3,7 +3,7 @@
 import { useEffect, useRef } from 'react';
 import view from '../lib/backtesting/reference-view.json';
 import { mountReference } from '../lib/backtesting/reference-runtime';
-import { createTransferGate, environmentDraft, researchDefaults, type SettingsValues, type OptimizerResult } from '../lib/backtesting/integration';
+import { createTransferGate, environmentDraft, researchDefaults, type SettingsValues, type ReadOptimizerResult, type OptimizerResult } from '../lib/backtesting/integration';
 
 type Props = { portfolioId: string; symbol: string; saved: SettingsValues; onTransfer: (portfolioId: string, draft: SettingsValues) => void };
 
@@ -41,12 +41,12 @@ export default function BacktestingOptimisation(props: Props) {
     invalidate.current = invalidateResult;
     const bridge = {
       begin() { gate.begin(); resolution = input('resolution').value; refresh(); },
-      ranked(rows: OptimizerResult[]) { gate.ranked(rows); },
+      ranked(read: ReadOptimizerResult) { gate.ranked(read); },
       complete(cancelled: boolean) {
         gate.complete(cancelled);
         root.querySelectorAll('#optimizerTableBody tr').forEach((row, index) => {
           row.setAttribute('tabindex', '0');
-          row.setAttribute('aria-selected', 'false');
+          row.setAttribute('aria-selected', String(index === 0 && !!gate.applicable(current.current.portfolioId)));
           row.setAttribute('aria-label', `Select optimization result ${index + 1}`);
           const select = () => {
             gate.select(index);
@@ -58,22 +58,38 @@ export default function BacktestingOptimisation(props: Props) {
         });
         refresh();
       },
+      applyingBest(best: OptimizerResult) {
+        const finish = gate.applyingBest(current.current.portfolioId, best);
+        return () => {
+          finish();
+          refresh();
+          root.querySelectorAll('#optimizerTableBody tr').forEach((row, index) => {
+            row.setAttribute('aria-selected', String(index === 0 && !!gate.applicable(current.current.portfolioId)));
+          });
+        };
+      },
       invalidate: invalidateResult,
     };
     const runtime = mountReference(root, bridge, (url) => fetch(`/api/backtesting/candles?upstream=${encodeURIComponent(String(url))}`, { headers: { Accept: 'application/json' }, cache: 'no-store' }));
     for (const [id, value] of Object.entries(researchDefaults(props.saved, props.symbol))) input(id).value = value;
+    const syncSymbolHeading = () => {
+      const heading = root.querySelector('header h1');
+      if (heading?.firstChild) heading.firstChild.textContent = runtime.readMarketInputs().symbol;
+    };
+    syncSymbolHeading();
+    const onInput = () => { syncSymbolHeading(); invalidateResult(); };
     const selectionStyle = document.createElement('style');
     selectionStyle.textContent = '#optimizerTableBody tr[aria-selected="true"]{outline:1px solid var(--amber);outline-offset:-1px}';
     root.append(selectionStyle);
-    root.addEventListener('input', invalidateResult);
-    root.addEventListener('change', invalidateResult);
+    root.addEventListener('input', onInput);
+    root.addEventListener('change', onInput);
     button.addEventListener('click', () => {
       const selected = gate.applicable(current.current.portfolioId);
       if (!selected) return;
       const draft = environmentDraft(selected.params, resolution, current.current.saved);
       if (draft) current.current.onTransfer(props.portfolioId, draft);
     });
-    return () => { runtime.dispose(); invalidate.current = null; root.removeEventListener('input', invalidateResult); root.removeEventListener('change', invalidateResult); surface.remove(); };
+    return () => { runtime.dispose(); invalidate.current = null; root.removeEventListener('input', onInput); root.removeEventListener('change', onInput); surface.remove(); };
   }, [props.portfolioId]);
   return <div ref={host} aria-label="Backtesting & Optimisation" />;
 }

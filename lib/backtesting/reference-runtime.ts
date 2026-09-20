@@ -756,8 +756,8 @@ function renderOptimizerResults(results, tested, totalPossible) {
     return b.stats.profitFactor - a.stats.profitFactor;
   });
 
-  bridge.ranked(ranked.slice(0, topN));
   optimizerBest = ranked[0] || null;
+  bridge.ranked(index => index == null ? optimizerBest : (index >= 0 && index < topN ? ranked[index] || null : null));
   const resultsBox = document.getElementById('optimizer-results');
   const bestBox = document.getElementById('bestBox');
   const body = document.getElementById('optimizerTableBody');
@@ -905,8 +905,8 @@ document.getElementById('optCancelBtn').addEventListener('click', () => {
 });
 
 document.getElementById('applyBestBtn').addEventListener('click', () => {
-  bridge.invalidate();
   if (!optimizerBest) return;
+  const finishApply = bridge.applyingBest(optimizerBest);
   const p = optimizerBest.params;
   document.getElementById('emaLen').value = p.emaLen;
   document.getElementById('slopeLookback').value = p.slopeLookback;
@@ -918,6 +918,7 @@ document.getElementById('applyBestBtn').addEventListener('click', () => {
   document.getElementById('maxFeeRiskPct').value = p.maxFeeRiskPct;
   document.getElementById('optProgressText').textContent =
     'Best optimizer values copied to Configuration. Click Run Backtest to inspect the full trade log and equity curve.';
+  finishApply();
 });
 
 
@@ -1005,5 +1006,5 @@ document.getElementById('cancelBtn').addEventListener('click', () => {
   cancelRequested = true;
 });
 
-return { dispose() { cancelRequested = true; optimizerCancelRequested = true; bridge.invalidate(); } };
+return { dispose() { cancelRequested = true; optimizerCancelRequested = true; bridge.invalidate(); }, readMarketInputs };
 }
