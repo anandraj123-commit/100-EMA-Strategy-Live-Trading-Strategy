@@ -24,11 +24,14 @@ export function protectiveClientOrderId(entryIdentity:string,leg:'sl'|'tp'){retu
 // The schema marks response fields optional. Absence is UNVERIFIABLE, not INVALID.
 // Bracket summary prices do not establish the child order's side, size or execution type.
 export type TriggerMethod = 'mark_price' | 'last_traded_price' | 'spot_price';
+export const supportedTriggerMethod=(value:unknown):value is TriggerMethod=>value==='mark_price'||value==='last_traded_price'||value==='spot_price';
 export type ProtectionExpectation = {
+  symbol?:string; slTriggerMethod?:TriggerMethod; tpTriggerMethod?:TriggerMethod;
   productId: number; direction: 'long' | 'short'; contracts: number;
   sl: number | null; tp: number | null; triggerMethod: TriggerMethod;
 };
 export type StrictProtectionInspection = {
+  slTriggerMethod?:TriggerMethod; tpTriggerMethod?:TriggerMethod; slClientOrderId?:string|null; tpClientOrderId?:string|null;
   status: 'VALID' | 'INVALID' | 'UNVERIFIABLE' | 'MISSING';
   missing: Array<'sl' | 'tp'>; issues: string[];
   sl: number | null; tp: number | null; slOrderId: string | null; tpOrderId: string | null;
@@ -47,7 +50,7 @@ export function protectionTriggerBreached(direction: 'long' | 'short', leg: 'sl'
   return (direction === 'long') === (leg === 'sl') ? price <= trigger : price >= trigger;
 }
 
-export function inspectProtectionForSync(orders: any[], expected: ProtectionExpectation): StrictProtectionInspection {
+export function inspectProtectionForSync(orders: any[], expected: ProtectionExpectation, allowMethodAdoption=false): StrictProtectionInspection {
   const result: StrictProtectionInspection = {status:'VALID', missing:[], issues:[], sl:null, tp:null, slOrderId:null, tpOrderId:null};
   let invalid = false, unverifiable = false;
   const issue = (reason: string, absent = false) => {
@@ -84,7 +87,11 @@ export function inspectProtectionForSync(orders: any[], expected: ProtectionExpe
     check('order_type', order.order_type === 'market_order');
     // Delta documents both a string schema and boolean response examples.
     check('reduce_only', order.reduce_only === true || order.reduce_only === 'true');
-    check('stop_trigger_method', order.stop_trigger_method === expected.triggerMethod);
+    check('stop_trigger_method', supportedTriggerMethod(order.stop_trigger_method) && (allowMethodAdoption || order.stop_trigger_method === (expected[leg==='sl'?'slTriggerMethod':'tpTriggerMethod']??expected.triggerMethod)));
+    if(expected.symbol&&[order.product_symbol,order.symbol].some(value=>value!=null&&value!==expected.symbol))issue(`${leg}:symbol:INVALID`);
+    if(order.client_order_id!=null&&(typeof order.client_order_id!=='string'||!order.client_order_id.trim()))issue(`${leg}:client_order_id:INVALID`);
+    if(supportedTriggerMethod(order.stop_trigger_method))result[leg==='sl'?'slTriggerMethod':'tpTriggerMethod']=order.stop_trigger_method;
+    result[leg==='sl'?'slClientOrderId':'tpClientOrderId']=order.client_order_id??null;
     check('size', protectionNumber(order.size) === expected.contracts && expected.contracts > 0);
     // Optional unfilled_size is additional evidence, not a replacement for order size.
     if (order.unfilled_size != null && protectionNumber(order.unfilled_size) !== expected.contracts) issue(`${leg}:unfilled_size:INVALID`);
@@ -102,16 +109,19 @@ export function inspectProtectionForSync(orders: any[], expected: ProtectionExpe
 
 // Price differences may only be adopted after a fresh trigger-source price check.
 // Post-repair verification disallows adoption and demands the exact intended levels.
-export function planProtectionSync(inspection: StrictProtectionInspection, expected: ProtectionExpectation, currentPrice: number | null, allowAdoption = true) {
-  const updates: {sl?: number; tp?: number} = {}, issues = [...inspection.issues];
+export function planProtectionSync(inspection: StrictProtectionInspection, expected: ProtectionExpectation, currentPrice: number | null | Partial<Record<'sl'|'tp',number|null>>, allowAdoption = true) {
+  const updates: {sl?: number; tp?: number;slTriggerMethod?:TriggerMethod;tpTriggerMethod?:TriggerMethod} = {}, issues = [...inspection.issues];
   if (inspection.status === 'INVALID' || inspection.status === 'UNVERIFIABLE') return {updates, repair:[], issues};
   for (const leg of ['sl','tp'] as const) {
     const price = inspection[leg], intended = expected[leg];
-    if (price != null && (intended == null || !same(price, intended))) {
+    const methodKey=leg==='sl'?'slTriggerMethod':'tpTriggerMethod';
+    const methodChanged=inspection[methodKey]!=null&&inspection[methodKey]!== (expected[methodKey]??expected.triggerMethod);
+    const observedPrice=typeof currentPrice==='object'&&currentPrice!==null?currentPrice[leg]??null:currentPrice as number|null;
+    if (price != null && (intended == null || !same(price, intended)||methodChanged)) {
       if (!allowAdoption) issues.push(`${leg}:TRIGGER_PRICE_MISMATCH`);
-      else if (currentPrice == null || currentPrice <= 0 || !Number.isFinite(currentPrice)) issues.push(`${leg}:TRIGGER_PRICE_UNVERIFIABLE`);
-      else if (protectionTriggerBreached(expected.direction, leg, price, currentPrice)) issues.push(`${leg}:UNSAFE_PRICE_CHANGE`);
-      else updates[leg] = price;
+      else if (observedPrice == null || observedPrice <= 0 || !Number.isFinite(observedPrice)) issues.push(`${leg}:TRIGGER_PRICE_UNVERIFIABLE`);
+      else if (protectionTriggerBreached(expected.direction, leg, price, observedPrice)) issues.push(`${leg}:UNSAFE_PRICE_CHANGE`);
+      else {if(intended==null||!same(price,intended))updates[leg]=price;if(methodChanged)updates[methodKey]=inspection[methodKey];}
     }
   }
   const sl = updates.sl ?? expected.sl, tp = updates.tp ?? expected.tp;

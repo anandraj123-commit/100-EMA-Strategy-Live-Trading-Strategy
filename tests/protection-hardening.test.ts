@@ -58,7 +58,7 @@ for (const direction of ['long','short'] as const) {
     });
   }
 }
-for (const [field,value] of Object.entries({side:'buy',size:116,unfilled_size:116,reduce_only:false,order_type:'limit_order',stop_trigger_method:'mark_price',state:'closed',stop_price:0})) {
+for (const [field,value] of Object.entries({side:'buy',size:116,unfilled_size:116,reduce_only:false,order_type:'limit_order',stop_trigger_method:'unsupported_price',state:'closed',stop_price:0})) {
   test(`invalid ${field} blocks ACTIVE and blind repair`,async () => {
     const h=harness(); h.setRows([order('sl',h.e,{[field]:value}),order('tp',h.e)]); await h.run();
     assert.equal(h.trade.protectionState,'REPAIR_REQUIRED'); assert.equal(h.submissions.length,0);
@@ -114,7 +114,7 @@ test('missing unbreached leg is repaired with unchanged contracts, price, and si
 test('both missing legs follow bracket repair and exchangeSync uses post-repair values',async () => {
   const h=harness(); h.setRows([]); await h.run();
   assert.deepEqual(h.submissions,[{kind:'bracket',sl:90,tp:120}]); assert.equal(h.trade.protectionState,'ACTIVE');
-  assert.deepEqual(h.trade.exchangeSync,{at:'1970-01-01T00:00:10.000Z',sl:90,tp:120,status:'VALID'});
+  assert.deepEqual(h.trade.exchangeSync,{at:'1970-01-01T00:00:10.000Z',sl:90,tp:120,slTriggerMethod:'last_traded_price',tpTriggerMethod:'last_traded_price',status:'VALID'});
   assert.ok(h.events.some(event=>event.type==='PROTECTION_REPAIRED'));
 });
 for (const change of ['flat','direction','quantity','product','owned','attribution','mixed','identity','trade']) {

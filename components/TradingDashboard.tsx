@@ -182,6 +182,7 @@ export default function TradingDashboard({portfolioId,appMode,symbol}:{portfolio
     ['Mark Price', s.markPrice],
     ['Last Traded Price', s.lastTradedPrice],
     ['Spot Price', s.spotPrice],
+    ['Spread',deltaOnline&&s.spread?`${Number(s.spread.amount).toLocaleString(undefined,{maximumFractionDigits:8})} (${Number(s.spread.pct).toFixed(4)}%)`:'N/A'],
     ['Wallet Equity', s.equity],
     ['Available', s.available],
     ['Position Size', s.position?.size],
@@ -247,6 +248,8 @@ export default function TradingDashboard({portfolioId,appMode,symbol}:{portfolio
           </div>
         ))}
       </section>
+
+      <ActiveTradeSummary portfolioId={portfolioId} trade={s.activeTrade} positionSize={s.position?.size}/>
 
       <nav className="dashboardTabs" aria-label="Dashboard sections">
         {tabs.map(tab=><button type="button" key={tab} className={activeTab===tab?'active':''} aria-selected={activeTab===tab} onClick={async()=>{setActiveTab(tab);if(tab==='Backtesting & Optimisation'&&!researchOpened&&await loadSettings(true))setResearchOpened(true);}}>{tab}</button>)}
@@ -343,3 +346,21 @@ export default function TradingDashboard({portfolioId,appMode,symbol}:{portfolio
 }
 
 function Pagination({pagination,onPage}:{pagination:any;onPage:(page:number)=>void}){return <div className="pagination"><button type="button" className="secondary" disabled={!pagination?.hasPrevious} onClick={()=>onPage(pagination.page-1)}>Previous</button><span>Page {pagination?.page??1} of {pagination?.totalPages??1} · {pagination?.total??0} items</span><button type="button" className="secondary" disabled={!pagination?.hasNext} onClick={()=>onPage(pagination.page+1)}>Next</button></div>}
+
+
+export function ActiveTradeSummary({portfolioId,trade,positionSize}:{portfolioId:string;trade:any;positionSize:unknown}){
+  const size=positionSize==null?null:Number(positionSize);
+  const owned=trade?.portfolioId===portfolioId&&['BOT_CONFIRMED','MANUAL_CONFIRMED'].includes(trade?.attributionStatus)&&trade?.status!=='CLOSED';
+  const number=(value:unknown,suffix='')=>value==null||!Number.isFinite(Number(value))?'N/A':`${Number(value).toLocaleString(undefined,{maximumFractionDigits:8})}${suffix}`;
+  const date=(value:unknown)=>value==null?'N/A':Number.isFinite(new Date(String(value)).valueOf())?new Date(String(value)).toLocaleString():'N/A';
+  const latestTime=(history:any[])=>history?.length?date(history.reduce((latest,item)=>Date.parse(item.modifiedAt)>Date.parse(latest.modifiedAt)?item:latest).modifiedAt):'N/A';
+  const groups:Record<string,Array<[string,unknown]>>=owned?{
+    Trade:[['Source',trade.source==='bot'?'ALGO':'MANUAL'],['Symbol',trade.symbol],['Side',trade.side],['Status',trade.status]],
+    Entry:[['Entry Price',number(trade.actualEntryPrice)],['Entry Time',date(trade.entryTime)]],
+    Exit:[['Exit Time','OPEN']],
+    Protection:[['Initial SL',number(trade.initialSL)],['Current/Latest SL',number(trade.currentSL??trade.initialSL)],['Latest SL Modification Time',latestTime(trade.slHistory)],['Initial Target',number(trade.takeProfit)],['Current/Latest Target',number(trade.currentTarget??trade.takeProfit)],['Latest Target Modification Time',latestTime(trade.targetHistory)]],
+    Exposure:[['Actual/Effective Leverage',number(trade.effectiveLeverage,'x')],['Position Quantity (contracts)',number(trade.remainingContracts)],['Position Exposure/Notional',number(trade.positionNotional)],['Margin/Capital Used',number(trade.marginUsed)],['Margin/Capital Used %',number(trade.marginUsedPct,'%')]],
+    Execution:[['Entry Slippage %',number(trade.entrySlippagePct,'%')],['Entry Slippage Amount (settling currency)',number(trade.entrySlippageAmount)],['Entry Spread %',number(trade.entrySpreadPct,'%')],['Entry Spread Amount (price)',number(trade.entrySpreadAmount)]]
+  }:{};
+  return <div className="panel activeTradeSummary" aria-label="Active Trade summary"><h2>Active Trade</h2>{size===0?<p>NO ACTIVE TRADE</p>:size==null||!Number.isFinite(size)?<p>POSITION STATUS UNAVAILABLE</p>:!owned?<p>OWNERSHIP UNCONFIRMED — MONITORING POSITION</p>:<div className="activeTradeGroups">{Object.entries(groups).map(([group,fields])=><div key={group}><h3>{group}</h3><dl>{fields.map(([label,value])=><div key={label}><dt>{label}</dt><dd>{String(value??'N/A')}</dd></div>)}</dl></div>)}</div>}</div>;
+}

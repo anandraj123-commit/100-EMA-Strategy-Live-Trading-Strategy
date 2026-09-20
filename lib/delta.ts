@@ -208,3 +208,12 @@ export async function placeBracket(productId: number, sl: number, tp: number, tr
 }
 
 export async function placeProtectiveStopOrder(productId:number,side:'buy'|'sell',size:number,kind:'stop_loss_order'|'take_profit_order',stopPrice:number,triggerMethod:'mark_price'|'last_traded_price'|'spot_price',clientOrderId:string){return privateRequest('POST','/v2/orders',undefined,{product_id:productId,size,side,order_type:'market_order',stop_order_type:kind,stop_price:String(stopPrice),stop_trigger_method:triggerMethod,reduce_only:true,client_order_id:clientOrderId,cancel_orders_accepted:false});}
+
+// Reporting-only margin data (may lag). Never used for entry sizing or position-flat checks.
+export async function getMarginedPosition(productId:number){
+  const response=await privateRequest('GET','/v2/positions/margined',{product_ids:String(productId)});
+  return (response.result??[]).find((position:any)=>Number(position.product_id)===productId)??null;
+}
+export async function resizeProtectiveOrder(productId:number,orderId:string,size:number){
+  return privateRequest('PUT','/v2/orders',undefined,{id:orderId,product_id:productId,size});
+}

@@ -29,3 +29,10 @@
 .portfolioCard .portfolioRobotDot.running{animation:portfolioRobotPulse 1.5s ease-in-out infinite}
 @keyframes portfolioRobotPulse{50%{opacity:.45}}
 @media(prefers-reduced-motion:reduce){.portfolioCard .portfolioRobotDot.running{animation:none}}
+
+/* Read-only compact view of the persisted trade lifecycle. */
+.activeTradeSummary{width:100%;margin:18px 0}
+.activeTradeGroups{display:grid;grid-template-columns:repeat(auto-fit,minmax(170px,1fr));gap:18px}
+.activeTradeGroups h3{font-size:12px;text-transform:uppercase;opacity:.7;margin:0 0 10px}
+.activeTradeGroups dl{margin:0}.activeTradeGroups dl>div{margin:0 0 9px}
+.activeTradeGroups dt{font-size:11px;opacity:.7}.activeTradeGroups dd{margin:3px 0 0;font-size:13px;overflow-wrap:anywhere}

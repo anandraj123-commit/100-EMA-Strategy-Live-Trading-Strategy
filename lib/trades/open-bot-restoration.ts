@@ -2,14 +2,17 @@ import type { TradeDocument } from '../../models/Trade';
 
 export function restoreOpenBotTrade(record:TradeDocument,position:{size?:unknown;entry_price?:unknown},ownership:{botOwnedContracts:number;mixedPosition:boolean},fallbackContractValue:number) {
   return {
+    lifecycle:record,
+    remainingContracts:record.remainingContracts??Math.abs(Number(position.size)),
+    initialSL:record.initialSL,takeProfit:record.takeProfit,protectionSlOrderId:record.protectionSlOrderId,protectionTpOrderId:record.protectionTpOrderId,
     direction:record.side==='SHORT'?'short':'long',
     entryPrice:Number(record.actualEntryPrice??record.intendedEntryPrice??position.entry_price??0),
     actualEntryPrice:record.actualEntryPrice,
     trigger:record.intendedEntryPrice,
-    sl:record.initialSL,
-    tp:record.takeProfit,
+    sl:record.currentSL??record.initialSL,
+    tp:record.currentTarget??record.takeProfit,
     contracts:Number(record.contracts),
-    ownedContracts:ownership.botOwnedContracts,
+    ownedContracts:Number(record.contracts),
     contractValue:Number(record.contractValue??fallbackContractValue??0),
     positionSize:Number(position.size??0),
     orderId:record.entryOrderId,

@@ -1,14 +1,58 @@
+import type { TriggerMethod } from '../lib/trades/protection';
 import type { ObjectId } from 'mongodb';
 
 export type TradeSource = 'bot' | 'exchange_existing';
 export type AttributionStatus = 'BOT_CONFIRMED' | 'MANUAL_CONFIRMED' | 'UNKNOWN' | 'LOOKUP_FAILED';
 export type TradeSide = 'LONG' | 'SHORT';
-export type TradeExitReason = 'SL' | 'TP' | 'MANUAL_CLOSE' | 'OTHER' | 'UNKNOWN';
+export type TradeExitReason = 'SL' | 'TP' | 'MANUAL_CLOSE' | 'OTHER' | 'UNKNOWN' | 'LIQUIDATION' | 'EXCHANGE_CLOSE';
 export type FinancialStatus = 'actual' | 'partial' | 'estimated' | 'unavailable';
 export type ReconciliationStatus = 'OPEN' | 'CLOSED' | 'RECONCILING' | 'FAILED';
 export type ProtectionState = 'PENDING'|'ACTIVE'|'REPAIR_REQUIRED';
 
+export interface ProtectionPriceChange {
+  previousValue: number; value: number; modifiedAt: Date;
+  timeSource: 'exchange' | 'observed'; source: 'EXCHANGE_RECONCILIATION';
+  orderId: string | null;
+}
+export interface ProtectionSubmission {
+  state: 'PENDING' | 'VERIFIED' | 'TERMINAL';
+  clientOrderId: string | null; orderId: string | null; submittedAt: Date;
+  kind: 'bracket' | 'stop' | 'resize';
+}
 export interface TradeDocument {
+  lifecycleRevision?: number;
+  positionClosedAt?: Date | null;
+  closeReconciliationPending?: boolean;
+  entryDataStatus?: 'provisional' | 'reconciled';
+  entryTimeSource?: 'exchange' | 'observed' | null;
+  exitTimeSource?: 'exchange' | 'observed' | null;
+  currentSLTriggerMethod?:TriggerMethod;
+  currentTargetTriggerMethod?:TriggerMethod;
+  protectionSlClientOrderId?:string|null;
+  protectionTpClientOrderId?:string|null;
+  currentSL?: number | null;
+  currentTarget?: number | null;
+  slHistory?: ProtectionPriceChange[];
+  targetHistory?: ProtectionPriceChange[];
+  remainingContracts?: number | null;
+  remainingQuantity?: number | null;
+  positionNotional?: number | null;
+  effectiveLeverage?: number | null;
+  equityAtEntry?: number | null;
+  marginUsed?: number | null;
+  marginUsedPct?: number | null;
+  entrySlippagePct?: number | null;
+  entrySlippageAmount?: number | null;
+  entryBid?: number | null;
+  entryAsk?: number | null;
+  entrySpreadAmount?: number | null;
+  entrySpreadPct?: number | null;
+  entrySpreadTime?: Date | null;
+  entryOrderIds?: string[];
+  exitOrderIds?: string[];
+  exchangePositionId?: string | null;
+  protectionSubmissions?: Partial<Record<'sl'|'tp', ProtectionSubmission>>;
+
   _id?: ObjectId;
   tradeId: string;
   portfolioId?: string;
