@@ -1,8 +1,22 @@
 #!/bin/sh
+
 set -eu
 
 branch=$(git symbolic-ref --quiet --short HEAD || true)
-if [ "$branch" = "main" ]; then
-  echo "Validating direct commit to main..."
-  npm run validate
-fi
+
+# Block direct commits to any branch starting with:
+# main, testing, or release
+case "$branch" in
+  main*|testing*|release*)
+    echo "ERROR: Direct commits to protected branch '$branch' are not allowed."
+    echo "Please create or switch to a feature/product branch."
+    exit 1
+    ;;
+esac
+
+# Run validation on every allowed branch
+echo "Running validation before commit on branch: $branch..."
+
+npm run validate
+
+echo "Validation passed. Commit allowed."

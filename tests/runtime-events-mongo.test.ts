@@ -59,9 +59,12 @@ test('real MongoDB: atomic decision history, identity, TTL origin, indexes and p
   recorder.observe({kind:'robot',portfolioId:'a',running:true,previous:false});
   recorder.observe({kind:'robot',portfolioId:'a',running:false,previous:true});
   recorder.observe({kind:'robot',portfolioId:'a',running:false,previous:false});
-  recorder.observe({kind:'event',portfolioId:'a',event:'WORKER_FAILED',data:{error:new Error('diagnostic failure'),apiKey:'never-persist',apiSecret:'never-persist',Authorization:'never-persist',mongoUri:'mongodb://user:password@host/db',telegramToken:'never-persist'}});
+  // Synthetic redaction input only; the connection URI still comes from the environment.
+  const mongoUri=new URL('mongodb://sanitizer-fixture.invalid/db');
+  mongoUri.username='fixture-user';mongoUri.password='fixture-password';
+  recorder.observe({kind:'event',portfolioId:'a',event:'WORKER_FAILED',data:{error:new Error('diagnostic failure'),apiKey:'never-persist',apiSecret:'never-persist',Authorization:'never-persist',mongoUri:mongoUri.href,telegramToken:'never-persist'}});
   await recorder.flush();assert.equal(await rows.countDocuments({eventType:'ROBOT'}),2);
-  const error=(await rows.findOne({eventType:'ERROR'}))!;assert.doesNotMatch(JSON.stringify(error),/never-persist|user:password/);
+  const error=(await rows.findOne({eventType:'ERROR'}))!;assert.doesNotMatch(JSON.stringify(error),/never-persist|fixture-user|fixture-password/);
   await closeMongoConnection();
   const reconnected=await runtimeEventsCollection();assert.equal(await reconnected.countDocuments({event:'ORDER_SENT'}),1);
   assert.equal(db.databaseName,process.env.MONGODB_DB_TESTING);assert.equal(await (await getDb()).collection('trades').countDocuments(),0);

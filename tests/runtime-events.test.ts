@@ -71,13 +71,16 @@ test('robot records only actual start/stop transitions',async()=>{
 });
 
 test('central sanitizer covers nested credentials, embedded credentials, errors, Date and cycles',()=>{
+ // Synthetic credentials on a reserved invalid host; never used for a connection.
+ const mongoUri=new URL('mongodb://sanitizer-fixture.invalid/db');
+ mongoUri.username='fixture-user';mongoUri.password='fixture-password';
  const input:any={apiKey:'key',api_secret:'secret',headers:{Authorization:'Bearer abc',cookie:'session'},password:'password',telegramBotToken:'token',
-  mongoUri:'mongodb://person:password@host/db',message:'mongodb+srv://person:password@host/db Bearer abc 123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZABCDE',
+  mongoUri:mongoUri.href,message:`${mongoUri.href} ${mongoUri.href.replace('mongodb:','mongodb+srv:')} Bearer abc 123456789:ABCDEFGHIJKLMNOPQRSTUVWXYZABCDE`,
   error:new Error('api_key=abcd secret=abcdef'),nested:['known-private-value'],date:new Date(0)};input.circular=input;
  const result=sanitize(input,['known-private-value']);
  assert.equal(result.apiKey,'[REDACTED]');assert.equal(result.api_secret,'[REDACTED]');assert.equal(result.headers.Authorization,'[REDACTED]');
  assert.equal(result.telegramBotToken,'[REDACTED]');assert.equal(result.mongoUri,'[REDACTED]');assert.equal(result.nested[0],'[REDACTED]');
- assert.ok(result.date instanceof Date);assert.equal(result.circular,'[CIRCULAR]');assert.doesNotMatch(JSON.stringify(result),/person:password|Bearer abc|ABCDEFGHIJKLMNOPQRSTUVWXYZ|=abcd/);
+ assert.ok(result.date instanceof Date);assert.equal(result.circular,'[CIRCULAR]');assert.doesNotMatch(JSON.stringify(result),/fixture-user|fixture-password|Bearer abc|ABCDEFGHIJKLMNOPQRSTUVWXYZ|=abcd/);
 });
 
 test('TTL and partial unique indexes are scoped exclusively to runtime events',()=>{

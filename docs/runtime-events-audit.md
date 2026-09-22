@@ -118,11 +118,9 @@ Seven days of retention is not a guarantee that arbitrarily many portfolios fit 
 
 ## Validation results
 
-Final command:
+Final command (with `TRADE_TEST_MONGODB_URI` and `AUTH_TEST_MONGODB_URI` supplied externally for the isolated test database):
 
 ```sh
-TRADE_TEST_MONGODB_URI='mongodb://127.0.0.1:27028/?serverSelectionTimeoutMS=2000' \
-AUTH_TEST_MONGODB_URI='mongodb://127.0.0.1:27028/?serverSelectionTimeoutMS=2000' \
 npm run validate
 ```
 

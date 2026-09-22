@@ -1,14 +1,21 @@
 #!/bin/sh
+
 set -eu
 
-protect_main=false
 while read -r local_ref local_oid remote_ref remote_oid; do
-  if [ "$remote_ref" = "refs/heads/main" ]; then
-    protect_main=true
-  fi
+
+  # Extract branch name from refs/heads/<branch>
+  case "$remote_ref" in
+    refs/heads/main*|refs/heads/testing*|refs/heads/release*)
+      branch="${remote_ref#refs/heads/}"
+
+      echo "ERROR: Direct push to protected branch '$branch' is not allowed."
+      echo "Please push your feature/product branch and merge through the approved workflow."
+
+      exit 1
+      ;;
+  esac
+
 done
 
-if [ "$protect_main" = "true" ]; then
-  echo "Validating push that updates refs/heads/main..."
-  npm run validate
-fi
+echo "Push allowed."
