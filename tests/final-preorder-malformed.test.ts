@@ -10,7 +10,7 @@ const pending={direction:'long' as const,trigger:100,sl:90,candleTime:1_000,conf
 const input:FinalPreOrderInput={
   identity:{portfolioId:'malformed-boundary',environment:'demo',symbol:'BTCUSD',productId:27},
   setup:pending,
-  config:{revision:'rev',autoTrade:true,entryValidCandles:2,resolutionSec:60,riskPct:1,rr:8,minStopPct:0,maxEffectiveLeverage:100,maxFeeRiskPct:100,gstPct:18},
+  config:{revision:'rev',autoTrade:true,verified:true,entryValidCandles:2,resolutionSec:60,riskPct:1,rr:8,minStopPct:0,maxEffectiveLeverage:100,maxFeeRiskPct:100,gstPct:18},
   product:{id:27,contractValue:1,tickSize:0.01,takerRate:0.0005}
 };
 

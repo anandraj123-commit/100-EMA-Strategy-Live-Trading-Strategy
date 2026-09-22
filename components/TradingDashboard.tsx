@@ -1,12 +1,15 @@
 'use client';
 
+import BacktestingOptimisation from './BacktestingOptimisation';
+import AppModeBadge from './AppModeBadge';
+import type { AppMode } from '../lib/app-mode';
 import { useEffect, useState } from 'react';
 import { autoTradeStatus, calculateCurrentPnL, effectiveAutoTrade, paginateItems } from '../lib/dashboard';
 import DecisionLogRow from './DecisionLogRow';
 
-const tabs=['Environment Variables','Profit','History','Decision Log','Trade / Synchronisation Events','Pending Setup','Active Trade','Strategy / Guardrails','Latest Decision'] as const;
+const tabs=['Environment Variables','Backtesting & Optimisation','Profit','History','Decision Log','Trade / Synchronisation Events','Pending Setup','Active Trade','Strategy / Guardrails','Latest Decision'] as const;
 
-export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
+export default function TradingDashboard({portfolioId,appMode,symbol}:{portfolioId:string;appMode:AppMode;symbol?:string}) {
   const portfolioQuery=`portfolioId=${encodeURIComponent(portfolioId)}`;
   const [s, setS] = useState<any>({});
   const [controlBusy, setControlBusy] = useState(false);
@@ -24,6 +27,7 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
   const [settingsEditing,setSettingsEditing]=useState(false);
   const [settingsBusy,setSettingsBusy]=useState(false);
   const [settingsError,setSettingsError]=useState('');
+  const [researchOpened,setResearchOpened]=useState(false);
 
   async function load() {
     try {
@@ -50,9 +54,9 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
     } catch { /* retain the last history view during a temporary failure */ }
   }
 
-  async function loadSettings(){
+  async function loadSettings(preserveDraft=false){
     setSettingsError('');
-    try{const response=await fetch(`/api/settings?${portfolioQuery}`,{cache:'no-store'});if(response.status===401||response.status===403){if(response.status===401)window.location.replace('/login');throw new Error('Administrator access is required');}if(!response.ok)throw new Error(`Settings request failed: HTTP ${response.status}`);const data=await response.json();setSettings(data.definitions||[]);setSettingValues(data.values||{});setSavedSettingValues(data.values||{});}catch(error:any){setSettingsError(error?.message||'Unable to load settings');}
+    try{const response=await fetch(`/api/settings?${portfolioQuery}`,{cache:'no-store'});if(response.status===401||response.status===403){if(response.status===401)window.location.replace('/login');throw new Error('Administrator access is required');}if(!response.ok)throw new Error(`Settings request failed: HTTP ${response.status}`);const data=await response.json();setSettings(data.definitions||[]);if(!preserveDraft)setSettingValues(data.values||{});setSavedSettingValues(data.values||{});return true;}catch(error:any){setSettingsError(error?.message||'Unable to load settings');return false;}
   }
 
   useEffect(() => {
@@ -79,7 +83,7 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
 
   async function saveSettings(){
     if(!settingsEditing||!csrfToken)return;setSettingsBusy(true);setSettingsError('');
-    try{const response=await fetch('/api/settings',{method:'PUT',headers:{'content-type':'application/json','x-csrf-token':csrfToken},body:JSON.stringify({portfolioId,values:settingValues})});const data=await response.json();if(!response.ok)throw new Error(data.error||`Save failed: HTTP ${response.status}`);setSettingValues(data.values);setSavedSettingValues(data.values);setSettingsEditing(false);}catch(error:any){setSettingsError(error?.message||'Unable to save settings');}finally{setSettingsBusy(false);}
+    try{const response=await fetch('/api/settings',{method:'PUT',headers:{'content-type':'application/json','x-csrf-token':csrfToken},body:JSON.stringify({portfolioId,values:settingValues})});const data=await response.json();if(!response.ok)throw new Error(data.error||`Save failed: HTTP ${response.status}`);setSettingValues(data.values);setSavedSettingValues(data.values);setSettingsEditing(false);setS((previous:any)=>({...previous,verified:data.verified===true,...(data.entriesStopped?{running:false,effectiveAutoTrade:false,pending:null}:{})}));}catch(error:any){setSettingsError(error?.message||'Unable to save settings');}finally{setSettingsBusy(false);}
   }
 
   async function control(running: boolean) {
@@ -95,7 +99,7 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
       });
 
       if (!res.ok) {
-        throw new Error(`Control request failed: HTTP ${res.status}`);
+        const data=await res.json();throw new Error(data.error||`Control request failed: HTTP ${res.status}`);
       }
 
       // Update immediately so the correct button appears without waiting
@@ -126,8 +130,9 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
   }
 
   const running = s.running === true;
+  const statusUnavailable = s.statusAvailable === false;
   const deltaOnline = s.connection?.state === undefined || s.connection?.state === 'online';
-  const deltaConnectionLabel=deltaOnline?'DELTA ONLINE':s.connection?.state==='offline'?'DELTA OFFLINE · RECONNECTING':`${String(s.connection?.code||'DELTA ERROR').replaceAll('_',' ')} · RETRYING`;
+  const deltaConnectionLabel=statusUnavailable?'WORKER STATUS UNAVAILABLE':deltaOnline?'DELTA ONLINE':s.connection?.state==='offline'?'DELTA OFFLINE · RECONNECTING':`${String(s.connection?.code||'DELTA ERROR').replaceAll('_',' ')} · RETRYING`;
   const autoTrade = autoTradeStatus(s.effectiveAutoTrade);
   const money=(value:any)=>value==null?'—':Number(value).toFixed(4);
   const coveredValue=(scope:any,valueField:string,completeField:string)=>scope?.totalTrades===0?'0.0000':scope?.[completeField]?money(scope[valueField]):'—';
@@ -163,11 +168,11 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
   }
 
   const cards = [
-    ['Robot Status', running ? 'RUNNING' : 'STOPPED'],
-    ['Delta Connection', deltaOnline ? 'ONLINE' : 'OFFLINE'],
-    ['Delta Monitoring', deltaOnline ? 'CONNECTED / ACTIVE' : 'RECONNECTING…'],
+    ['Robot Status', statusUnavailable ? 'UNAVAILABLE' : running ? 'RUNNING' : 'STOPPED'],
+    ['Delta Connection', statusUnavailable ? 'UNAVAILABLE' : deltaOnline ? 'ONLINE' : 'OFFLINE'],
+    ['Delta Monitoring', statusUnavailable ? 'FRESH WORKER STATUS REQUIRED' : deltaOnline ? 'CONNECTED / ACTIVE' : 'RECONNECTING…'],
     ['New Algo Entries', running ? 'ENABLED' : 'DISABLED'],
-    ['Environment', s.env],
+    ['Application Mode', appMode.toUpperCase()],
     ['Symbol', s.symbol],
     ['Resolution', s.strategy?.resolution],
     ['Strategy Price', s.price],
@@ -177,6 +182,7 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
     ['Mark Price', s.markPrice],
     ['Last Traded Price', s.lastTradedPrice],
     ['Spot Price', s.spotPrice],
+    ['Spread',deltaOnline&&s.spread?`${Number(s.spread.amount).toLocaleString(undefined,{maximumFractionDigits:8})} (${Number(s.spread.pct).toFixed(4)}%)`:'N/A'],
     ['Wallet Equity', s.equity],
     ['Available', s.available],
     ['Position Size', s.position?.size],
@@ -193,7 +199,7 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
   return (
     <main>
       <div className="dashboardHead">
-        <h1>{s.symbol||'PORTFOLIO'} <span>// DELTA {s.environment==='demo'?'DEMO':'LIVE'} ALGO</span></h1>
+        <h1>{s.symbol||'PORTFOLIO'} <span>// DELTA ALGO</span> <AppModeBadge appMode={appMode}/></h1>
         <button type="button" className="logout" onClick={logout} disabled={!csrfToken || controlBusy}>LOG OUT</button>
       </div>
 
@@ -232,7 +238,7 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
         )}
       </div>
 
-      {s.error && <pre className="error">{s.error}</pre>}
+      {s.error && <pre className="error" role="alert">{s.error}</pre>}
 
       <section>
         {cards.map(([label, value, tone]) => (
@@ -243,11 +249,16 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
         ))}
       </section>
 
+      <ActiveTradeSummary portfolioId={portfolioId} trade={s.activeTrade} positionSize={s.position?.size}/>
+
       <nav className="dashboardTabs" aria-label="Dashboard sections">
-        {tabs.map(tab=><button type="button" key={tab} className={activeTab===tab?'active':''} aria-selected={activeTab===tab} onClick={()=>setActiveTab(tab)}>{tab}</button>)}
+        {tabs.map(tab=><button type="button" key={tab} className={activeTab===tab?'active':''} aria-selected={activeTab===tab} onClick={async()=>{setActiveTab(tab);if(tab==='Backtesting & Optimisation'&&!researchOpened&&await loadSettings(true))setResearchOpened(true);}}>{tab}</button>)}
       </nav>
 
-      {activeTab==='Environment Variables'&&<div className="panel settingsPanel"><div className="panelHead"><div><h2>Environment Variables</h2><p>Safe Portfolio settings apply live. Relevant changes cancel pending setups and rebuild strategy state.</p></div>{!settingsEditing?<button type="button" onClick={()=>setSettingsEditing(true)} disabled={!settings.length}>Enable Edit</button>:<div className="inlineButtons"><button type="button" onClick={saveSettings} disabled={settingsBusy}>{settingsBusy?'Saving…':'Save'}</button><button type="button" className="secondary" onClick={()=>{setSettingValues(savedSettingValues);setSettingsEditing(false);setSettingsError('');}} disabled={settingsBusy}>Cancel</button></div>}</div>{settingsError&&<p className="settingsError">{settingsError}</p>}<div className="settingsGrid">{settings.map((definition:any)=><label key={definition.key}><span>{definition.label}<small>{definition.key} · {definition.restartRequired?'restart required':'applies live'}</small></span>{definition.type==='boolean'?<select disabled={!settingsEditing} value={String(settingValues[definition.key])} onChange={event=>setSettingValues(values=>({...values,[definition.key]:event.target.value==='true'}))}><option value="true">true</option><option value="false">false</option></select>:<input disabled={!settingsEditing} type={definition.type==='number'?'number':'text'} value={String(settingValues[definition.key]??'')} onChange={event=>setSettingValues(values=>({...values,[definition.key]:definition.type==='number'?Number(event.target.value):event.target.value}))}/>}</label>)}</div>{!settings.length&&!settingsError&&<p>Loading settings…</p>}</div>}
+      {activeTab==='Backtesting & Optimisation'&&!researchOpened&&<p role={settingsError?'alert':'status'}>{settingsError||'Loading saved Portfolio settings…'}</p>}
+      {researchOpened&&settings.length>0&&<div hidden={activeTab!=='Backtesting & Optimisation'}><BacktestingOptimisation portfolioId={portfolioId} symbol={symbol||s.symbol||'BTCUSD'} saved={savedSettingValues} onTransfer={(sourceId,draft)=>{if(sourceId!==portfolioId||settingsBusy)return;setSettingValues(values=>({...values,...draft}));setSettingsEditing(true);setSettingsError('');setActiveTab('Environment Variables');}}/></div>}
+
+      {activeTab==='Environment Variables'&&<div className="panel settingsPanel"><div className="panelHead"><div><h2>Environment Variables</h2><p>Safe Portfolio settings apply live. Relevant changes cancel pending setups and rebuild strategy state.</p></div>{!settingsEditing?<button type="button" onClick={()=>setSettingsEditing(true)} disabled={!settings.length}>Enable Edit</button>:<div className="inlineButtons"><button type="button" onClick={saveSettings} disabled={settingsBusy}>{settingsBusy?'Saving…':'Save'}</button><button type="button" className="secondary" onClick={()=>{setSettingValues(savedSettingValues);setSettingsEditing(false);setSettingsError('');}} disabled={settingsBusy}>Cancel</button></div>}</div>{settingsError&&<p className="settingsError">{settingsError}</p>}<div className="settingsGrid">{settings.map((definition:any)=><label key={definition.key}><span>{definition.label}<small>{definition.key} · {definition.restartRequired?'restart required':'applies live'}</small>{definition.key==='VERIFIED'&&<small>{settingValues.VERIFIED===true?'Settings verified.':'Review and verify settings before robot can start.'}</small>}</span>{definition.key==='VERIFIED'?<button type="button" className={`verifiedToggle ${settingValues.VERIFIED===true?'on':'off'}`} role="switch" aria-label="Verified" aria-checked={settingValues.VERIFIED===true} disabled={!settingsEditing||settingsBusy} onClick={()=>setSettingValues(values=>({...values,VERIFIED:values.VERIFIED!==true}))}>{settingValues.VERIFIED===true?'ON':'OFF'}</button>:definition.type==='boolean'?<select disabled={!settingsEditing} value={String(settingValues[definition.key])} onChange={event=>setSettingValues(values=>({...values,[definition.key]:event.target.value==='true'}))}><option value="true">true</option><option value="false">false</option></select>:<input disabled={!settingsEditing} type={definition.type==='number'?'number':'text'} value={String(settingValues[definition.key]??'')} onChange={event=>setSettingValues(values=>({...values,[definition.key]:definition.type==='number'?Number(event.target.value):event.target.value}))}/>}</label>)}</div>{!settings.length&&!settingsError&&<p>Loading settings…</p>}</div>}
 
       {activeTab==='Profit'&&<div className="performanceGrid">
         {([['ACCOUNT TOTAL',tradeStats?.account],['BOT PERFORMANCE',tradeStats?.bot],['MANUAL PERFORMANCE',tradeStats?.manual]] as const).map(([title,scope])=>(
@@ -335,3 +346,21 @@ export default function TradingDashboard({portfolioId}:{portfolioId:string}) {
 }
 
 function Pagination({pagination,onPage}:{pagination:any;onPage:(page:number)=>void}){return <div className="pagination"><button type="button" className="secondary" disabled={!pagination?.hasPrevious} onClick={()=>onPage(pagination.page-1)}>Previous</button><span>Page {pagination?.page??1} of {pagination?.totalPages??1} · {pagination?.total??0} items</span><button type="button" className="secondary" disabled={!pagination?.hasNext} onClick={()=>onPage(pagination.page+1)}>Next</button></div>}
+
+
+export function ActiveTradeSummary({portfolioId,trade,positionSize}:{portfolioId:string;trade:any;positionSize:unknown}){
+  const size=positionSize==null?null:Number(positionSize);
+  const owned=trade?.portfolioId===portfolioId&&['BOT_CONFIRMED','MANUAL_CONFIRMED'].includes(trade?.attributionStatus)&&trade?.status!=='CLOSED';
+  const number=(value:unknown,suffix='')=>value==null||!Number.isFinite(Number(value))?'N/A':`${Number(value).toLocaleString(undefined,{maximumFractionDigits:8})}${suffix}`;
+  const date=(value:unknown)=>value==null?'N/A':Number.isFinite(new Date(String(value)).valueOf())?new Date(String(value)).toLocaleString():'N/A';
+  const latestTime=(history:any[])=>history?.length?date(history.reduce((latest,item)=>Date.parse(item.modifiedAt)>Date.parse(latest.modifiedAt)?item:latest).modifiedAt):'N/A';
+  const groups:Record<string,Array<[string,unknown]>>=owned?{
+    Trade:[['Source',trade.source==='bot'?'ALGO':'MANUAL'],['Symbol',trade.symbol],['Side',trade.side],['Status',trade.status]],
+    Entry:[['Entry Price',number(trade.actualEntryPrice)],['Entry Time',date(trade.entryTime)]],
+    Exit:[['Exit Time','OPEN']],
+    Protection:[['Initial SL',number(trade.initialSL)],['Current/Latest SL',number(trade.currentSL??trade.initialSL)],['Latest SL Modification Time',latestTime(trade.slHistory)],['Initial Target',number(trade.takeProfit)],['Current/Latest Target',number(trade.currentTarget??trade.takeProfit)],['Latest Target Modification Time',latestTime(trade.targetHistory)]],
+    Exposure:[['Actual/Effective Leverage',number(trade.effectiveLeverage,'x')],['Position Quantity (contracts)',number(trade.remainingContracts)],['Position Exposure/Notional',number(trade.positionNotional)],['Margin/Capital Used',number(trade.marginUsed)],['Margin/Capital Used %',number(trade.marginUsedPct,'%')]],
+    Execution:[['Entry Slippage %',number(trade.entrySlippagePct,'%')],['Entry Slippage Amount (settling currency)',number(trade.entrySlippageAmount)],['Entry Spread %',number(trade.entrySpreadPct,'%')],['Entry Spread Amount (price)',number(trade.entrySpreadAmount)]]
+  }:{};
+  return <div className="panel activeTradeSummary" aria-label="Active Trade summary"><h2>Active Trade</h2>{size===0?<p>NO ACTIVE TRADE</p>:size==null||!Number.isFinite(size)?<p>POSITION STATUS UNAVAILABLE</p>:!owned?<p>OWNERSHIP UNCONFIRMED — MONITORING POSITION</p>:<div className="activeTradeGroups">{Object.entries(groups).map(([group,fields])=><div key={group}><h3>{group}</h3><dl>{fields.map(([label,value])=><div key={label}><dt>{label}</dt><dd>{String(value??'N/A')}</dd></div>)}</dl></div>)}</div>}</div>;
+}

@@ -1,0 +1,185 @@
+[
+  {
+    "portfolioId": "sample-portfolio",
+    "symbol": "XAUTUSD",
+    "eventType": "DECISION",
+    "resolution": "5m",
+    "candleStartTime": "2026-09-23T10:00:00.000Z",
+    "event": "DECISION_UPDATED",
+    "current": {
+      "candleTime": 1790157600,
+      "loggedAt": "2026-09-23T10:05:02Z",
+      "candle": {
+        "open": 99,
+        "high": 103,
+        "low": 98,
+        "close": 102
+      },
+      "ema": {
+        "current": 100,
+        "previous": 99,
+        "direction": "UP"
+      },
+      "buy": {
+        "slope": true,
+        "patternA": true,
+        "patternB": false,
+        "setup": true
+      },
+      "sell": {
+        "slope": false,
+        "patternA": false,
+        "patternB": false,
+        "setup": false
+      },
+      "decision": {
+        "action": "WAIT",
+        "reason": "WAITING_FOR_BREAKOUT"
+      },
+      "strategyLifecycle": {
+        "signalCandleTime": 1790157600,
+        "pendingExists": true,
+        "lifecycleStage": "SIGNAL_CREATED",
+        "breakoutEligible": false
+      },
+      "price": {
+        "source": "last",
+        "last": 102,
+        "mark": 102
+      }
+    },
+    "correlationId": "signal:sample-portfolio:XAUTUSD:5m:1790157600",
+    "settingsSnapshot": {
+      "RESOLUTION": "5m",
+      "EMA_LENGTH": 75,
+      "SLOPE_LOOKBACK": 3,
+      "ENTRY_VALID_CANDLES": 2,
+      "RR": 8,
+      "RISK_PCT": 1,
+      "PRICE_SOURCE": "last"
+    },
+    "createdAt": "2026-09-23T10:05:02.000Z",
+    "updatedAt": "2026-09-23T10:05:02.000Z",
+    "stateSignature": "fcdb96209ed389a7c8da53d9f6f37740085e3461452693c950650a9a1b745bf0",
+    "history": [
+      {
+        "at": "2026-09-23T10:05:02.000Z",
+        "state": {
+          "decision": {
+            "action": "WAIT",
+            "reason": "WAITING_FOR_BREAKOUT"
+          },
+          "strategyLifecycle": {
+            "breakoutEligible": false,
+            "lifecycleStage": "SIGNAL_CREATED",
+            "pendingExists": true,
+            "signalCandleTime": 1790157600
+          }
+        }
+      }
+    ]
+  },
+  {
+    "portfolioId": "sample-portfolio",
+    "symbol": "XAUTUSD",
+    "event": "TRADE_LIFECYCLE_UPDATED",
+    "eventType": "TRADE",
+    "eventKey": "8cbe9511f6b8b3c715cf8674e2705fe84be91dfa98efa796509fb4adb9d8a63f",
+    "data": {
+      "portfolioId": "sample-portfolio",
+      "tradeId": "demo:sample-portfolio:bot:27:entry-1",
+      "entryIntentId": "sample-intent",
+      "entryOrderId": "entry-1",
+      "entryFillIds": [
+        "fill-1"
+      ],
+      "status": "OPEN",
+      "actualEntryPrice": 103.5,
+      "contracts": 5,
+      "initialSL": 98,
+      "takeProfit": 143,
+      "entryTime": "2026-09-23T10:10:03.000Z"
+    },
+    "createdAt": "2026-09-23T10:10:04.000Z",
+    "updatedAt": "2026-09-23T10:10:04.000Z",
+    "tradeId": "demo:sample-portfolio:bot:27:entry-1",
+    "orderId": "entry-1",
+    "correlationId": "sample-intent",
+    "streamKey": "b051319770f3e5c016eb302f18c68b92b83bbce3dc1ff64b14e87abfc3f88742",
+    "stateSignature": "7f6fd4092a7b678f256aed30aad93a8811b268ec3106df6de4fb938a1cf6553d"
+  },
+  {
+    "portfolioId": "sample-portfolio",
+    "symbol": "XAUTUSD",
+    "event": "POSITION_RECONCILED",
+    "eventType": "SYNC",
+    "eventKey": "84884eee88380661fab216a3625aca3a72c456b984d4f50a8e25cd98cbb1cc14",
+    "data": {
+      "tradeId": "demo:sample-portfolio:bot:27:entry-1",
+      "previousPositionSize": 0,
+      "positionSize": 5,
+      "entryPrice": 103.5
+    },
+    "createdAt": "2026-09-23T10:10:04.000Z",
+    "updatedAt": "2026-09-23T10:10:04.000Z",
+    "tradeId": "demo:sample-portfolio:bot:27:entry-1",
+    "correlationId": "demo:sample-portfolio:bot:27:entry-1",
+    "streamKey": "c9ce867c46fb67e0456ff6fcb094c14c6238c4f868ba8ce142334b8b812665fd",
+    "stateSignature": "27ab5cdd3b312074649566c00eb78925b2bdac371e86e4abdf2e10970beaae02"
+  },
+  {
+    "portfolioId": "sample-portfolio",
+    "symbol": "XAUTUSD",
+    "event": "PROTECTION_STATE_OBSERVED",
+    "eventType": "PROTECTION",
+    "eventKey": "0820c98af437fe64bb19d29dcf4eae7e444b9d1f4be5788834ccc98dbbb26d31",
+    "data": {
+      "tradeId": "demo:sample-portfolio:bot:27:entry-1",
+      "state": "ACTIVE",
+      "sl": 98,
+      "tp": 143,
+      "slOrderId": "sl-1",
+      "tpOrderId": "tp-1",
+      "slTriggerMethod": "last_traded_price",
+      "tpTriggerMethod": "last_traded_price"
+    },
+    "createdAt": "2026-09-23T10:10:04.000Z",
+    "updatedAt": "2026-09-23T10:10:04.000Z",
+    "tradeId": "demo:sample-portfolio:bot:27:entry-1",
+    "correlationId": "demo:sample-portfolio:bot:27:entry-1",
+    "streamKey": "b04a49c2b35a63a00eeb1db9b25b55c0f6a92ffc4a8234cdb7135ce4e663225a",
+    "stateSignature": "3b785bbe16a5ad52e824d2b749a75f1e60e3bb0827e50761af6750e001713d1c"
+  },
+  {
+    "portfolioId": "sample-portfolio",
+    "event": "ROBOT_STARTED",
+    "eventType": "ROBOT",
+    "eventKey": "e336d9d840627900ea4b78066533af56fe0c46c1a187c0030098917cf3d79822",
+    "data": {
+      "running": true,
+      "previous": false
+    },
+    "createdAt": "2026-09-23T10:10:04.000Z",
+    "updatedAt": "2026-09-23T10:10:04.000Z"
+  },
+  {
+    "portfolioId": "sample-portfolio",
+    "symbol": "XAUTUSD",
+    "event": "WORKER_CYCLE_FAILED",
+    "eventType": "ERROR",
+    "eventKey": "a1fc83828613814351d37eb479c4504f0c6302676d5a5a86d4cdf6628409bbe6",
+    "data": {
+      "subsystem": "worker",
+      "operation": "cycle",
+      "error": {
+        "name": "Error",
+        "message": "Exchange request failed"
+      },
+      "apiKey": "[REDACTED]"
+    },
+    "createdAt": "2026-09-23T10:10:04.000Z",
+    "updatedAt": "2026-09-23T10:10:04.000Z",
+    "streamKey": "a8116b9b02e6667946a0d2093cb550ba2768d9ed87511fd115ba9b55661a2e03",
+    "stateSignature": "f7d6c5cd7554b63a330c254edf0f31ed34afce4701cb90a7808031e3d7676e3c"
+  }
+]

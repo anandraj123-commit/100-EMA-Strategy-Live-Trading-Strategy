@@ -289,13 +289,13 @@ test('protection reconciliation warning preserves reported protection instead of
   assert.match(text,/Breakout: NOT ELIGIBLE · POSITION OPEN/);
 });
 
-test('stopped robot and AUTO_TRADE off show entry restrictions without changing pending semantics',async()=>{
+test('stopped robot and AUTO_TRADE off show entry restrictions with no executable pending',async()=>{
   const stopped=workerHarness();stopped.stop();await stopped.cycle(observed(0),candles('long'),102);
   assert.equal(decisionLogPresentation(row(stopped,T0)).title,'ROBOT STOPPED');
   assert.match(display(row(stopped,T0)),/New Entry Allowed: NO/);
   const off=workerHarness();off.config.autoTrade=false;await off.cycle(observed(0),candles('long'),102);
   const log=row(off,T0),text=display(log);
-  assert.equal(log.strategyLifecycle.pendingExists,true);
+  assert.equal(log.strategyLifecycle.pendingExists,false);
   assert.match(text,/Auto Trade: OFF/);
   assert.match(text,/New Entry Submission: DISABLED/);
   assert.match(text,/New Entry Allowed: NO/);

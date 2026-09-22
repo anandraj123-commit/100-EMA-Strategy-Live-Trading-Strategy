@@ -1,1 +1,4 @@
-import { notFound,redirect } from 'next/navigation';import FuturesNav from '../../../../components/FuturesNav';import TradingDashboard from '../../../../components/TradingDashboard';import { getServerSession } from '../../../../lib/auth/session';import { findPortfolioById } from '../../../../lib/portfolio/repository';export const dynamic='force-dynamic';export default async function LiveWorkspace({params}:{params:Promise<{portfolioId:string}>}){if(!await getServerSession())redirect('/login');const{portfolioId}=await params,portfolio=await findPortfolioById(portfolioId);if(!portfolio||portfolio.environment!=='real')notFound();return <><FuturesNav active="Live Trade"/><TradingDashboard portfolioId={portfolioId}/></>;}
+import { redirect } from 'next/navigation';
+import { getServerSession } from '../../../../lib/auth/session';
+export const dynamic='force-dynamic';
+export default async function LegacyWorkspace({params}:{params:Promise<{portfolioId:string}>}){if(!await getServerSession())redirect('/login');const {portfolioId}=await params;redirect(`/futures/dashboard/${encodeURIComponent(portfolioId)}`);}

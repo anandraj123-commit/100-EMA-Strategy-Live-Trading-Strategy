@@ -7,7 +7,7 @@ function harness(direction:'long'|'short'='long') {
   const input:FinalPreOrderInput={
     identity:{portfolioId:'p',environment:'demo',symbol:'TEST',productId:27},
     setup:{direction,trigger:100,sl:direction==='long'?90:110,candleTime:1200,configRevision:'a'},
-    config:{revision:'a',autoTrade:true,entryValidCandles:2,resolutionSec:300,riskPct:1,rr:2,minStopPct:0,maxEffectiveLeverage:100,maxFeeRiskPct:100,gstPct:18},
+    config:{revision:'a',autoTrade:true,verified:true,entryValidCandles:2,resolutionSec:300,riskPct:1,rr:2,minStopPct:0,maxEffectiveLeverage:100,maxFeeRiskPct:100,gstPct:18},
     product:{id:27,contractValue:0.3,tickSize:0.5,takerRate:0.0005}
   };
   const state={running:true,shutdown:false,config:{...input.config},pending:{...input.setup} as typeof input.setup|null,

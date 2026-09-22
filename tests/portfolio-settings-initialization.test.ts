@@ -20,7 +20,8 @@ function database(){
     const documents=rows.get(name)!;
     return {
       createIndex:async()=> 'index',
-      findOne:async(query:any)=>structuredClone([...documents.values()].find(row=>Object.entries(query).every(([key,value])=>String(row[key])===String(value)))??null),
+      findOneAndUpdate:async(query:any,update:any)=>{const id=String(query._id),existing=documents.get(id);if(existing&&existing.ownerId!==update.$set.ownerId&&existing.expiresAt>Date.now())throw Object.assign(new Error('locked'),{code:11000});const row={_id:id,...update.$set};documents.set(id,row);return row;},
+      findOne:async(query:any)=>structuredClone([...documents.values()].find(row=>Object.entries(query).every(([key,value])=>key==='expiresAt'?row[key]>(value as any).$gt:String(row[key])===String(value)))??null),
       updateOne:async(query:any,update:any)=>{
         if(failSettings)throw new Error('settings unavailable');
         const id=String(query._id),existing=documents.get(id);
@@ -52,14 +53,14 @@ function worker(id:string){
   const configModule={exports:{} as any};
   vm.runInNewContext(compile(fs.readFileSync('lib/config.ts','utf8')),{
     module:configModule,exports:configModule.exports,process:{env:{EMA_LENGTH:'100',RR:'8',RISK_PCT:'1'},cwd:()=>process.cwd()},
-    console:{log(){},warn(){}},require:(name:string)=>name==='dotenv'?{config:()=>({})}:require(name)
+    console:{log(){},warn(){}},require:(name:string)=>name==='dotenv'?{config:()=>({})}:name==='./app-mode'?require('../lib/app-mode'):require(name)
   });
   const file=ts.createSourceFile('worker.ts',fs.readFileSync('worker.ts','utf8'),ts.ScriptTarget.ES2022,true);
   const launcher=file.statements.at(-1)!;
   assert.ok(ts.isExpressionStatement(launcher)&&ts.isVoidExpression(launcher.expression));
   const source=ts.createPrinter().printFile(ts.factory.updateSourceFile(file,file.statements.slice(0,-1)));
   const module={exports:{} as any};
-  const modules:Record<string,any>={'./lib/config':configModule.exports,'./lib/settings/repository':settings,'./lib/settings/definitions':definitions,'./lib/settings/live':live};
+  const modules:Record<string,any>={'./lib/state':{readControl:()=>({running:false}),writeControl:()=>{}},'./lib/config':configModule.exports,'./lib/settings/repository':settings,'./lib/settings/definitions':definitions,'./lib/settings/live':live};
   vm.runInNewContext(compile(source+`\nruntimeFallbackSettings=runtimeConfigSnapshot(); effectiveRuntimeSettings={...runtimeFallbackSettings}; module.exports={refreshRuntimeSettings,config};`),{
     module,exports:module.exports,process:{env:{PORTFOLIO_RUNTIME_ID:id}},console,
     require:(name:string)=>modules[name]??{}
@@ -75,9 +76,10 @@ test('creation initializes all allowed defaults, preserves edits, and isolates w
     assert.equal(db.rows.get('portfolio')!.size,2);
     const stored=db.rows.get('runtime_settings')!;
     assert.equal(stored.size,2);
-    assert.deepEqual(stored.get(`portfolio:${aid}`).values,definitions.runtimeSettingDefaults());
+    assert.equal(stored.get(`portfolio:${aid}`).verified,false);
+    assert.deepEqual(await settings.getRuntimeSettingOverrides(aid),definitions.runtimeSettingDefaults());
     assert.equal(stored.get(`portfolio:${aid}`).portfolioId,aid);
-    assert.deepEqual(Object.keys(stored.get(`portfolio:${aid}`).values).sort(),definitions.runtimeSettingMetadata().map(d=>d.key).sort());
+    assert.deepEqual(Object.keys(stored.get(`portfolio:${aid}`).values).sort(),definitions.runtimeSettingMetadata().filter(d=>d.key!=='VERIFIED').map(d=>d.key).sort());
     for(const key of Object.keys(stored.get(`portfolio:${aid}`).values))assert.doesNotMatch(key,/SECRET|PASSWORD|API_KEY|MONGODB|AUTH|SESSION|ENCRYPTION|RAILWAY/);
     await settings.saveRuntimeSettingOverrides({EMA_LENGTH:75,RR:4,RISK_PCT:2},'editor',aid);
     const edited=structuredClone(stored.get(`portfolio:${aid}`));
@@ -96,9 +98,9 @@ test('creation initializes all allowed defaults, preserves edits, and isolates w
     assert.equal(wa.config.emaLen,125);assert.equal(wa.config.rr,6);assert.equal(wa.config.riskPct,3);
     assert.equal(wb.config.emaLen,definitions.runtimeSettingDefaults().EMA_LENGTH);
     const restarted=worker(aid);await restarted.refreshRuntimeSettings();assert.equal(restarted.config.emaLen,125);
-    await portfolios.deletePortfolio(aid);
-    assert.ok(stored.has(`portfolio:${aid}`)); // Preserve existing deletion semantics.
-    const c=await create('AAAUSD');assert.notEqual(c._id.toHexString(),aid);
+    assert.equal(await portfolios.deletePortfolio(aid),false);
+    assert.ok(stored.has(`portfolio:${aid}`)); // A rejected deletion preserves settings.
+    const c=await create('CCCUSD');assert.notEqual(c._id.toHexString(),aid);
     const wc=worker(c._id.toHexString());await wc.refreshRuntimeSettings();
     assert.equal(wc.config.emaLen,definitions.runtimeSettingDefaults().EMA_LENGTH);
     assert.deepEqual(await settings.getRuntimeSettingOverrides(bid),definitions.runtimeSettingDefaults());

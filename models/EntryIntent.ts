@@ -1,6 +1,8 @@
+import type { TradeDocument } from './Trade';
 export type EntryIntentState='PREPARED'|'SUBMITTING'|'CONFIRMED'|'AMBIGUOUS'|'FAILED_CONFIRMED';
 
 export interface EntryIntentDocument {
+  entrySnapshot?: Pick<TradeDocument,'equityAtEntry'|'entryBid'|'entryAsk'|'entrySpreadAmount'|'entrySpreadPct'|'entrySpreadTime'>;
   intentId:string;
   portfolioId:string;
   environment:'real'|'demo';

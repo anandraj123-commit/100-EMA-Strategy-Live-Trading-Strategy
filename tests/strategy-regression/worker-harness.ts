@@ -38,19 +38,19 @@ export function workerHarness(options:{entryValidCandles?:number;emaLen?:number;
   const config={env:'demo',apiKey:'test',apiSecret:'test',symbol:'XAUTUSD',resolution:'5m',resolutionSec:300,
     emaLen:2,slopeLookback:1,entryValidCandles:2,rr:2,riskPct:1,riskBase:'available',maxDailyLosses:10,
     minStopPct:0,maxEffectiveLeverage:100,maxFeeRiskPct:20,gstPct:18,orderLeverage:50,
-    autoTrade:true,priceSource:'last',pollMs:1000,candleHistoryBars:200,...options};
+    autoTrade:true,verified:true,priceSource:'last',pollMs:1000,candleHistoryBars:200,...options};
   const empty=async()=>[];
   const yes=async()=>true;
   const modules:Record<string,any>={
     './lib/config':{config,applyRuntimeConfigOverrides:(next:any)=>{
-      const names:Record<string,string>={AUTO_TRADE:'autoTrade',POLL_MS:'pollMs'};
+      const names:Record<string,string>={AUTO_TRADE:'autoTrade',VERIFIED:'verified',POLL_MS:'pollMs'};
       for(const [key,name] of Object.entries(names))if(key in next)(config as any)[name]=next[key];
     }},
     './lib/strategy':strategy,'./lib/pending':pendingRules,'./lib/runtime/final-preorder':finalSafety,
     './lib/settings/live':settings,
     './lib/settings/definitions':{validateRuntimeSettings:(values:any)=>values},
-    './lib/settings/repository':{getRuntimeSettingOverrides:async()=>({})},
-    './lib/state':{readControl:()=>({running}),writeStatus:(value:any)=>{status=value;}},
+    './lib/settings/repository':{getRuntimeSettingsSnapshot:async()=>({values:{VERIFIED:true},entryRevision:'legacy'})},
+    './lib/state':{readControl:()=>({running}),writeControl:(control:any)=>{running=control.running;},writeStatus:(value:any)=>{status=value;}},
     './lib/delta':{
       getProduct:async()=>({id:27,state:'live',trading_status:'operational',contract_value:0.1,tick_size:0.5,taker_commission_rate:0.0005}),
       getTicker:async()=>({close:price,mark_price:price,spot_price:price}),

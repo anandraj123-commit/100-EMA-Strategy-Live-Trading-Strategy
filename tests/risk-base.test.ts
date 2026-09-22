@@ -8,7 +8,7 @@ import { sanitizeRuntimeSettingOverrides } from '../lib/settings/repository';
 import { finalPreOrderSafetyCheck,type FinalPreOrderDependencies } from '../lib/runtime/final-preorder';
 
 const pending={direction:'long' as const,trigger:100,sl:90,candleTime:1_000,configRevision:'rev'};
-const input={identity:{portfolioId:'p1',environment:'demo' as const,symbol:'BTCUSD',productId:27},setup:pending,config:{revision:'rev',autoTrade:true,entryValidCandles:2,resolutionSec:60,riskPct:1,rr:8,minStopPct:0,maxEffectiveLeverage:100,maxFeeRiskPct:100,gstPct:18},product:{id:27,contractValue:1,tickSize:0.01,takerRate:0.0005}};
+const input={identity:{portfolioId:'p1',environment:'demo' as const,symbol:'BTCUSD',productId:27},setup:pending,config:{revision:'rev',autoTrade:true,verified:true,entryValidCandles:2,resolutionSec:60,riskPct:1,rr:8,minStopPct:0,maxEffectiveLeverage:100,maxFeeRiskPct:100,gstPct:18},product:{id:27,contractValue:1,tickSize:0.01,takerRate:0.0005}};
 const dependencies=(available:number):FinalPreOrderDependencies=>({robotRunning:()=>true,refreshConfig:async()=>input.config,currentPending:()=>pending,latestCompletedCandleTime:()=>1_060,leaseOwned:async()=>true,leaseLost:()=>false,portfolioEntryAllowed:async()=>true,portfolio:async()=>({id:'p1',environment:'demo',symbol:'BTCUSD',productId:27}),position:async()=>({size:0}),availableMargin:async()=>available});
 
 test('canonical environment RISK_BASE available is accepted',()=>assert.equal(validateRiskBase('available'),'available'));

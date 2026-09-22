@@ -1,12 +1,12 @@
 import { portfolioEntryAllowed } from './lib/portfolio/deletion-state';
 import { applyRuntimeConfigOverrides, config, configurePortfolioRuntime } from './lib/config';
 import { emaSeries, evaluateSetup } from './lib/strategy';
-import { DeltaRequestError,deltaErrorDetails,getCandles, getProduct, getTicker, getWallet, getPosition, getOpenOrders, getFillsBounded, getOrderHistoryBounded, toDeltaMicroseconds, placeMarketOrder, placeBracket, placeProtectiveStopOrder, setLeverage } from './lib/delta';
-import { readControl, writeStatus } from './lib/state';
-import { persistClosedTrade as persistClosedTradeBase, persistOpenBotTrade as persistOpenBotTradeBase, persistOpenManualTrade as persistOpenManualTradeBase } from './lib/trades/persistence';
-import { findLegacyUnresolvedTrades,findOpenBotTrade as findOpenBotTradeBase, findOpenManualTrades as findOpenManualTradesBase, findUnresolvedBotTrades as findUnresolvedBotTradesBase, findUnresolvedManualTrades as findUnresolvedManualTradesBase, markTradeReconciling,synchronizeTradeProtection,updateTradeProtectionState } from './lib/trades/repository';
+import { DeltaRequestError,deltaErrorDetails,getCandles, getProduct, getTicker, getWallet, getPosition, getMarginedPosition, resizeProtectiveOrder, getOpenOrders, getFillsBounded, getOrderHistoryBounded, toDeltaMicroseconds, placeMarketOrder, placeBracket, placeProtectiveStopOrder, setLeverage } from './lib/delta';
+import { readControl, writeControl, writeStatus, observeRuntime } from './lib/state';
+import { openExecutionPatch, reconcileOpenTradeExecution, persistClosedTrade as persistClosedTradeBase, persistOpenBotTrade as persistOpenBotTradeBase, persistOpenManualTrade as persistOpenManualTradeBase } from './lib/trades/persistence';
+import { findTradeLifecycle, claimProtectionSubmission, clearTerminalProtectionSubmission, findLegacyUnresolvedTrades,findOpenBotTrade as findOpenBotTradeBase, findOpenManualTrades as findOpenManualTradesBase, findUnresolvedBotTrades as findUnresolvedBotTradesBase, findUnresolvedManualTrades as findUnresolvedManualTradesBase, markTradeReconciling,synchronizeTradeProtection,updateTradeProtectionState } from './lib/trades/repository';
 import { classifyBotExitEvidence, deltaTimestampMilliseconds, findBotCloseBoundary, findTradeCloseBoundary, reconstructOpenManualLifecycles, resolvePositionOwnership, stableTradeId as stableTradeIdBase, type BotExitOutcome } from './lib/trades/reconciliation';
-import { getRuntimeSettingOverrides } from './lib/settings/repository';
+import { getRuntimeSettingsSnapshot } from './lib/settings/repository';
 import { validateRuntimeSettings } from './lib/settings/definitions';
 import { changedRuntimeSettings, pendingInvalidatingKeys, runtimeSettingsRevision, strategyStateKeys } from './lib/settings/live';
 import { findPortfolioById, listPortfolio } from './lib/portfolio/repository';
@@ -22,7 +22,7 @@ import { entryClientOrderId,entryIntentId } from './lib/entry-intents/identity';
 import { findBlockingEntryIntent,findRecoverableConfirmedEntryIntents,markEntryIntentOwnershipPersisted } from './lib/entry-intents/repository';
 import { EntryNotTransmittedError,reconcilePortfolioEntryIntents,submitPreparedEntryIntent } from './lib/entry-intents/service';
 import { protectionTriggerMethod,protectionTriggerPrice } from './lib/trades/protection';
-import { reconcileProtection } from './lib/trades/protection-reconciliation';
+import { reconcileProtection, missingProtectionEvidence } from './lib/trades/protection-reconciliation';
 import { explicitPositionSize, finalPreOrderDispatchStateCheck, finalPreOrderSafetyCheck } from './lib/runtime/final-preorder';
 import { dailyLossEntryAllowed,recordDailyLossEvent,restoreDailyLossStreak,tradingDayKey,type DailyLossScope } from './lib/risk/daily-loss-streak';
 import { restoreOpenBotTrade } from './lib/trades/open-bot-restoration';
@@ -79,6 +79,7 @@ let consecutiveNetworkFailures = 0;
 let effectiveRuntimeSettings:Record<string,string|number|boolean>={};
 let runtimeFallbackSettings:Record<string,string|number|boolean>={};
 let configRevision='';
+let entrySettingsRevision='legacy';
 let strategyStateReady=false;
 let blockingEntryIntent:any=null;
 let shuttingDown=false;
@@ -103,14 +104,14 @@ const protectionRepairAttempts = new Set<string>();
 const POSITION_REFRESH_MS = 5_000;
 const WALLET_REFRESH_MS = 30_000;
 
-function runtimeConfigSnapshot(){return {RESOLUTION:config.resolution,AUTO_TRADE:config.autoTrade,POLL_MS:config.pollMs,EMA_LENGTH:config.emaLen,SLOPE_LOOKBACK:config.slopeLookback,ENTRY_VALID_CANDLES:config.entryValidCandles,RR:config.rr,RISK_PCT:config.riskPct,RISK_BASE:config.riskBase,MAX_DAILY_CONSECUTIVE_LOSSES:config.maxDailyLosses,MIN_STOP_PCT:config.minStopPct,MAX_EFFECTIVE_LEVERAGE:config.maxEffectiveLeverage,MAX_FEE_RISK_PCT:config.maxFeeRiskPct,GST_PCT:config.gstPct,ORDER_LEVERAGE:config.orderLeverage,PRICE_SOURCE:config.priceSource};}
+function runtimeConfigSnapshot(){return {RESOLUTION:config.resolution,AUTO_TRADE:config.autoTrade,VERIFIED:config.verified,POLL_MS:config.pollMs,EMA_LENGTH:config.emaLen,SLOPE_LOOKBACK:config.slopeLookback,ENTRY_VALID_CANDLES:config.entryValidCandles,RR:config.rr,RISK_PCT:config.riskPct,RISK_BASE:config.riskBase,MAX_DAILY_CONSECUTIVE_LOSSES:config.maxDailyLosses,MIN_STOP_PCT:config.minStopPct,MAX_EFFECTIVE_LEVERAGE:config.maxEffectiveLeverage,MAX_FEE_RISK_PCT:config.maxFeeRiskPct,GST_PCT:config.gstPct,ORDER_LEVERAGE:config.orderLeverage,PRICE_SOURCE:config.priceSource};}
 function botStrategyConfigSnapshot(){return {resolution:config.resolution,emaLength:config.emaLen,slopeLookback:config.slopeLookback,entryValidCandles:config.entryValidCandles,rr:config.rr,riskPct:config.riskPct,riskBase:config.riskBase,orderLeverage:config.orderLeverage,maxEffectiveLeverage:config.maxEffectiveLeverage,priceSource:config.priceSource,configRevision};}
 const CANDLE_CLOSE_GRACE_SEC = 2;
 const BRACKET_SYNC_MS = 5_000;
 const STALE_RECONCILIATION_MS = 60_000;
 
 function persistedSnapshot(record:any) {
-  return {tradeId:record.tradeId,direction:record.side==='SHORT'?'short':'long',source:record.source,attributionStatus:record.source==='bot'?'BOT_CONFIRMED':'MANUAL_CONFIRMED',entryPrice:record.actualEntryPrice??record.intendedEntryPrice,actualEntryPrice:record.actualEntryPrice,trigger:record.intendedEntryPrice,sl:record.initialSL,tp:record.takeProfit,contracts:record.contracts,ownedContracts:record.contracts,contractValue:record.contractValue,riskAmount:record.riskAmount??null,takerRate:record.takerRate??null,gstPct:record.gstPct??null,orderId:record.entryOrderId,clientOrderId:record.entryClientOrderId,entryFillIds:record.entryFillIds??[],entryIntentId:record.entryIntentId??null,protectionState:record.protectionState??null,strategyConfig:record.strategyConfig,openedAt:record.entryTime?.valueOf?.()??null,mixedPosition:false};
+  return {tradeId:record.tradeId,direction:record.side==='SHORT'?'short':'long',source:record.source,attributionStatus:record.source==='bot'?'BOT_CONFIRMED':'MANUAL_CONFIRMED',entryPrice:record.actualEntryPrice??record.intendedEntryPrice,actualEntryPrice:record.actualEntryPrice,trigger:record.intendedEntryPrice,sl:record.currentSL??record.initialSL,tp:record.currentTarget??record.takeProfit,initialSL:record.initialSL,takeProfit:record.takeProfit,protectionSlOrderId:record.protectionSlOrderId,protectionTpOrderId:record.protectionTpOrderId,contracts:record.contracts,ownedContracts:record.contracts,contractValue:record.contractValue,riskAmount:record.riskAmount??null,takerRate:record.takerRate??null,gstPct:record.gstPct??null,orderId:record.entryOrderId,clientOrderId:record.entryClientOrderId,entryFillIds:record.entryFillIds??[],entryIntentId:record.entryIntentId??null,protectionState:record.protectionState??null,strategyConfig:record.strategyConfig,openedAt:record.entryTime?.valueOf?.()??null,mixedPosition:false};
 }
 
 async function reconcileEntryIntents(){
@@ -118,7 +119,7 @@ async function reconcileEntryIntents(){
   const recoverable=await findRecoverableConfirmedEntryIntents(portfolioId),confirmed=[...new Map([...result.confirmed,...recoverable].map(intent=>[intent.intentId,intent])).values()];
   for(const intent of confirmed){
     addTradeEvent('ENTRY_RECONCILED_CONFIRMED',{intentId:intent.intentId,clientOrderId:intent.clientOrderId,orderId:intent.deltaOrderId});
-    const recovered={direction:intent.direction,entryPrice:intent.actualEntryPrice??intent.trigger,actualEntryPrice:intent.actualEntryPrice,trigger:intent.trigger,sl:intent.sl,tp:intent.tp,contracts:intent.contracts,ownedContracts:intent.contracts,contractValue:intent.contractValue,orderId:intent.deltaOrderId,clientOrderId:intent.clientOrderId,entryFillIds:intent.deltaFillIds??[],entryIntentId:intent.intentId,protectionState:'PENDING',openedAt:intent.submissionStartedAt?.valueOf?.()??intent.createdAt.valueOf(),riskAmount:intent.riskAmount,takerRate:intent.takerRate,gstPct:intent.gstPct,source:'bot',attributionStatus:'BOT_CONFIRMED',mixedPosition:false,strategyConfig:intent.strategyConfig};
+    const recovered={entrySnapshot:intent.entrySnapshot,direction:intent.direction,entryPrice:intent.actualEntryPrice??intent.trigger,actualEntryPrice:intent.actualEntryPrice,trigger:intent.trigger,sl:intent.sl,tp:intent.tp,contracts:intent.contracts,ownedContracts:intent.contracts,contractValue:intent.contractValue,orderId:intent.deltaOrderId,clientOrderId:intent.clientOrderId,entryFillIds:intent.deltaFillIds??[],entryIntentId:intent.intentId,protectionState:'PENDING',openedAt:intent.submissionStartedAt?.valueOf?.()??intent.createdAt.valueOf(),riskAmount:intent.riskAmount,takerRate:intent.takerRate,gstPct:intent.gstPct,source:'bot',attributionStatus:'BOT_CONFIRMED',mixedPosition:false,strategyConfig:intent.strategyConfig};
     await persistOpenBotTrade(recovered,intent.productId,intent.symbol);
     await markEntryIntentOwnershipPersisted(intent.intentId);
     addTradeEvent('ENTRY_CONFIRMED_PERSISTED',{intentId:intent.intentId,orderId:intent.deltaOrderId,protectionState:'PENDING'});
@@ -161,7 +162,7 @@ async function syncManualLifecycleLedger(positionSize:number,provided?:{fills:an
   const reconstruction=reconstructOpenManualLifecycles({productId:Number(product.id),currentSize:positionSize,fills,orders,historyComplete:complete,knownBotOrderIds:persistedBot?.entryOrderId?[String(persistedBot.entryOrderId)]:[]});
   if(!reconstruction.complete){addTradeEvent('MANUAL_LIFECYCLE_SYNC_PENDING',{reason:reconstruction.reason,paginationComplete:complete?'YES':'NO'});return;}
   const existingIds=new Set(persistedManuals.map(record=>record.tradeId)),currentIds=new Set<string>();
-  for(const lifecycle of reconstruction.manualLifecycles){const entryIds=lifecycle.entryFills.map(fill=>String(fill.id)),tradeId=stableTradeId('exchange_existing',Number(product.id),null,entryIds,[]);if(!tradeId)continue;currentIds.add(tradeId);if(existingIds.has(tradeId))continue;const saved=await persistOpenManualTrade({direction:lifecycle.side==='SHORT'?'short':'long',source:'exchange_existing',attributionStatus:'MANUAL_CONFIRMED',contracts:lifecycle.contracts,ownedContracts:lifecycle.contracts,contractValue:Number(product.contract_value)},Number(product.id),config.symbol,lifecycle.entryFills);existingIds.add(saved.tradeId);addTradeEvent('MANUAL_OPEN_TRADE_PERSISTED',{tradeId:saved.tradeId,source:'MANUAL',lifecycleContracts:lifecycle.contracts});}
+  for(const lifecycle of reconstruction.manualLifecycles){const entryIds=lifecycle.entryFills.map(fill=>String(fill.id)),tradeId=stableTradeId('exchange_existing',Number(product.id),null,entryIds,[]);if(!tradeId)continue;currentIds.add(tradeId);if(existingIds.has(tradeId))continue;const saved=await persistOpenManualTrade({direction:lifecycle.side==='SHORT'?'short':'long',source:'exchange_existing',attributionStatus:'MANUAL_CONFIRMED',contracts:lifecycle.contracts,ownedContracts:lifecycle.contracts,contractValue:Number(product.contract_value)},Number(product.id),config.symbol,lifecycle.entryFills);existingIds.add(saved.tradeId);currentIds.add(saved.tradeId);addTradeEvent('MANUAL_OPEN_TRADE_PERSISTED',{tradeId:saved.tradeId,source:'MANUAL',lifecycleContracts:lifecycle.contracts});}
   void reconcileStaleManualTrades(currentIds);
 }
 
@@ -267,12 +268,19 @@ function upsertUiLog(candleTime:number, patch:any) {
   if (i >= 0) uiLogs[i] = row;
   else uiLogs.unshift(row);
   uiLogs = uiLogs.slice(0, 60);
+  observeRuntime?.({kind:'decision',portfolioId,symbol:config.symbol,resolution:config.resolution,row,settings:{...runtimeConfigSnapshot(),configRevision,entrySettingsRevision}});
 }
 
 function addTradeEvent(type:string, details:any = {}) {
   recordDecisionLogEvent(type,details);
   tradeEvents.unshift({ id:`${Date.now()}-${Math.random().toString(36).slice(2,8)}`, at:new Date().toISOString(), type, ...details });
   tradeEvents = tradeEvents.slice(0, 100);
+  observeRuntime?.({kind:'event',portfolioId,symbol:config.symbol,event:type,data:tradeEvents[0],
+    context:(!details.tradeId||details.tradeId===activeTrade?.tradeId)?{
+      tradeId:activeTrade?.tradeId,orderId:activeTrade?.orderId,entryIntentId:activeTrade?.entryIntentId,
+      signalCandleTime:pending?.candleTime,
+      signalCorrelationId:pending?`signal:${portfolioId}:${config.symbol}:${config.resolution}:${pending.candleTime}`:undefined,activeTrade,pending
+    }:undefined});
 }
 
 function dailyLossScope():DailyLossScope {
@@ -335,13 +343,21 @@ function numeric(v:any):number|null {
   return Number.isFinite(n) ? n : null;
 }
 
+const protectionPriceSources=new WeakMap<object,'mark'|'last'|'spot'>();
+function openTradeProtectionPriceSource(){
+  if(!activeTrade)return config.priceSource;
+  let source=protectionPriceSources.get(activeTrade);
+  if(!source){source=activeTrade.strategyConfig?.priceSource??config.priceSource;protectionPriceSources.set(activeTrade,source!);}
+  return source!;
+}
+
 async function syncExchangeBracket(force = false) {
   if (!product || !activeTrade || cachedPositionSize === 0) return;
   const now = Date.now();
   if (!force && lastBracketSyncAt > 0 && now - lastBracketSyncAt < BRACKET_SYNC_MS) return;
   lastBracketSyncAt = now;
   const confirmed=(activeTrade.source==='bot'&&activeTrade.attributionStatus==='BOT_CONFIRMED')||(activeTrade.source==='exchange_existing'&&activeTrade.attributionStatus==='MANUAL_CONFIRMED');
-  if(!confirmed||!activeTrade.tradeId||activeTrade.mixedPosition===true)return;
+  if(!confirmed||!activeTrade.tradeId||activeTrade.mixedPosition===true||activeTrade.lifecycleReconciliationPending===true)return;
   const ownership = async () => {
     if(activeTrade.source==='exchange_existing'){
       const [openBot,openManuals]=await Promise.all([findOpenBotTrade(Number(product.id),portfolioId),findOpenManualTrades(Number(product.id),portfolioId)]);
@@ -349,17 +365,39 @@ async function syncExchangeBracket(force = false) {
     }
     return true;
   };
-  const triggerMethod = protectionTriggerMethod(config.priceSource);
+  const triggerMethod = protectionTriggerMethod(openTradeProtectionPriceSource());
   await reconcileProtection(Number(product.id), triggerMethod, {
     trade: () => activeTrade,
     position: () => getPosition(Number(product.id)),
     orders: () => getOpenOrders(Number(product.id)),
-    triggerPrice: async () => protectionTriggerPrice(await getTicker(config.symbol), triggerMethod),
+    triggerPrice: async (method=triggerMethod) => protectionTriggerPrice(await getTicker(config.symbol), method),
     ownership,
-    persist: synchronizeTradeProtection,
-    bracket: (sl, tp) => placeBracket(Number(product.id), sl, tp, triggerMethod),
-    stop: (side, size, leg, price, clientOrderId) => placeProtectiveStopOrder(Number(product.id), side, size,
-      leg === 'sl' ? 'stop_loss_order' : 'take_profit_order', price, triggerMethod, clientOrderId),
+    load: async () => {
+      const record=await findTradeLifecycle(activeTrade.tradeId,portfolioId);
+      return record?.environment===runtimeEnvironment&&record.productId===Number(product.id)&&record.symbol===config.symbol?record:null;
+    },
+    persist: async (tradeId,values) => {
+      const record=await synchronizeTradeProtection(tradeId,values,portfolioId);
+      if(record&&activeTrade?.tradeId===tradeId){activeTrade.lifecycle=record;activeTrade.protectionSlOrderId=record.protectionSlOrderId;activeTrade.protectionTpOrderId=record.protectionTpOrderId;}
+    },
+    verifyMissing: async legs => {
+      const record=await findTradeLifecycle(activeTrade.tradeId,portfolioId);
+      if(!record||record.environment!==runtimeEnvironment||record.productId!==Number(product.id))return false;
+      const position=await getPosition(Number(product.id));
+      const start=toDeltaMicroseconds(Math.max(0,(record.entryTime?.valueOf()??record.createdAt.valueOf())-60_000));
+      const [orders,fills]=await Promise.all([getOrderHistoryBounded(Number(product.id),start),getFillsBounded(Number(product.id),start)]);
+      const proof=openExecutionPatch(record,position,fills.result,orders.result,orders.complete&&fills.complete);
+      if(!proof||proof.remainingContracts!==record.remainingContracts)return false;
+      const evidence=missingProtectionEvidence(record,legs,orders.result,fills.result,orders.complete&&fills.complete);
+      if(!evidence.allowed)return false;
+      for(const leg of evidence.terminal){await clearTerminalProtectionSubmission(record.tradeId,portfolioId,leg,record.protectionSubmissions?.[leg]?.clientOrderId??null);protectionRepairAttempts.delete(`${record.tradeId}:${leg}`);}
+      return true;
+    },
+    claim: (legs,kind) => claimProtectionSubmission(activeTrade.tradeId,portfolioId,legs,kind,{sl:activeTrade.sl??null,tp:activeTrade.tp??null,contracts:Number(activeTrade.remainingContracts??activeTrade.ownedContracts??activeTrade.contracts),slTriggerMethod:activeTrade.lifecycle?.currentSLTriggerMethod,tpTriggerMethod:activeTrade.lifecycle?.currentTargetTriggerMethod}),
+    resize: (orderId,size) => resizeProtectiveOrder(Number(product.id),orderId,size),
+    bracket: (sl, tp, method=triggerMethod) => placeBracket(Number(product.id), sl, tp, method),
+    stop: (side, size, leg, price, clientOrderId, method=triggerMethod) => placeProtectiveStopOrder(Number(product.id), side, size,
+      leg === 'sl' ? 'stop_loss_order' : 'take_profit_order', price, method, clientOrderId),
     event: addTradeEvent,
     repairAttempts: protectionRepairAttempts,
     now: Date.now,
@@ -420,8 +458,10 @@ async function refreshPosition(lastPrice:number, force = false) {
     activeTrade = ownership.status==='BOT_CONFIRMED' ? restoreOpenBotTrade(persistedBot,position,ownership,Number(product?.contract_value||0)) : ownership.status==='MANUAL_CONFIRMED' ? {
       direction,
       entryPrice:Number(position?.entry_price || 0),
-      sl:restoredManual?.initialSL??null,
-      tp:restoredManual?.takeProfit??null,
+      sl:restoredManual?.currentSL??restoredManual?.initialSL??null,
+      lifecycle:restoredManual,initialSL:restoredManual?.initialSL,takeProfit:restoredManual?.takeProfit,
+      remainingContracts:Math.abs(positionSize),
+      tp:restoredManual?.currentTarget??restoredManual?.takeProfit??null,
       contracts:manualRestored?Math.abs(Number(restoredManual.contracts)):Math.abs(positionSize),
       ownedContracts:manualRestored?Math.abs(Number(restoredManual.contracts)):Math.abs(positionSize),
       contractValue:Number(product?.contract_value || 0),
@@ -486,7 +526,7 @@ async function refreshPosition(lastPrice:number, force = false) {
       classifiedAs:isBot?exitClassification.outcome:activeTrade.source==='exchange_existing'?'EXTERNAL_POSITION_CLOSED':'OWNERSHIP_UNCERTAIN',
       exitReason:isBot?exitClassification.exitReason:'UNKNOWN'
     });
-    const closedTrade = { ...activeTrade };
+    const closedTrade = { ...activeTrade, positionClosedAt:Date.now() };
     void persistClosedTrade(closedTrade, Number(product.id), config.symbol, lastPrice, undefined, tradeContext())
       .then(saved => {recordDecisionLogClose(saved,closedTrade);addTradeEvent('TRADE_HISTORY_PERSISTED', { tradeId:saved.tradeId, source:saved.source, financialStatus:saved.financialStatus });if(saved.reconciliationError)addTradeEvent('TRADE_FILL_ATTRIBUTION_UNCERTAIN',{tradeId:saved.tradeId,reason:saved.reconciliationError});if(saved.financialStatus!=='actual')addTradeEvent('TRADE_FINANCIALS_PARTIAL',{tradeId:saved.tradeId,financialStatus:saved.financialStatus});})
       .catch(async error => {const message=error?.message||String(error);if(closedTrade.tradeId){try{await markTradeReconciling(closedTrade.tradeId,message);}catch{}}addTradeEvent(message.includes('RECONCILIATION_UNRESOLVED')?'TRADE_HISTORY_RECONCILIATION_UNRESOLVED':'TRADE_HISTORY_RECONCILIATION_FAILED', { source:closedTrade.source,tradeId:closedTrade.tradeId??null,error:message,retry:closedTrade.tradeId?'ACTIVE':'UNAVAILABLE_WITHOUT_STABLE_EXCHANGE_ID' });});
@@ -496,9 +536,17 @@ async function refreshPosition(lastPrice:number, force = false) {
   // Keep the adopted/live trade details synchronized with the current Delta position.
   if (positionSize !== 0 && activeTrade) {
     if(previousPositionSize!==0&&Math.sign(positionSize)!==Math.sign(previousPositionSize)){activeTrade.mixedPosition=true;if(activeTrade.tradeId)void markTradeReconciling(activeTrade.tradeId,'Position reversal/netting requires manual reconciliation').catch(()=>{});addTradeEvent('TRADE_ATTRIBUTION_RETRY_PENDING',{tradeId:activeTrade.tradeId??null,productId:Number(product.id),reason:'Position reversal/netting crossed the adopted lifecycle boundary',retry:'ACTIVE'});}
-    if(activeTrade.source==='bot'&&Math.abs(positionSize)!==Number(activeTrade.ownedContracts||0)) activeTrade.mixedPosition=true;
+    if(activeTrade.tradeId&&['BOT_CONFIRMED','MANUAL_CONFIRMED'].includes(activeTrade.attributionStatus)){
+      try{
+        let marginPosition=null;try{marginPosition=await getMarginedPosition(Number(product.id));}catch{}
+        const record=await reconcileOpenTradeExecution(activeTrade,Number(product.id),position,tradeContext()!,marginPosition);
+        if(record){activeTrade.lifecycleReconciliationPending=false;activeTrade.mixedPosition=false;activeTrade.lifecycle=record;activeTrade.remainingContracts=record.remainingContracts;activeTrade.actualEntryPrice=record.actualEntryPrice;activeTrade.entryPrice=record.actualEntryPrice??activeTrade.entryPrice;activeTrade.openedAt=record.entryTime?.valueOf()??activeTrade.openedAt;activeTrade.entryFillIds=record.entryFillIds;activeTrade.contracts=record.contracts;activeTrade.ownedContracts=record.contracts;}
+        else {activeTrade.lifecycleReconciliationPending=true;if(Math.abs(positionSize)!==Number(activeTrade.remainingContracts??activeTrade.ownedContracts??activeTrade.contracts))activeTrade.mixedPosition=true;}
+      }catch(error:any){activeTrade.lifecycleReconciliationPending=true;addTradeEvent('TRADE_LIFECYCLE_RECONCILIATION_PENDING',{tradeId:activeTrade.tradeId,error:error?.message||String(error)});}
+    }
+    if(activeTrade.source==='bot'&&Math.abs(positionSize)!==Number(activeTrade.remainingContracts??activeTrade.ownedContracts??0)) activeTrade.mixedPosition=true;
     activeTrade.positionSize = positionSize;
-    if(activeTrade.source!=='bot'){
+    if(activeTrade.source!=='bot'&&!activeTrade.tradeId){
       activeTrade.contracts = Math.abs(positionSize);
       activeTrade.entryPrice = Number(position?.entry_price || activeTrade.entryPrice || 0);
     }
@@ -510,6 +558,10 @@ async function refreshPosition(lastPrice:number, force = false) {
 
   if(positionSize===0&&!activeTrade){await reconcileStaleBotTrades(lastPrice);void reconcileStaleManualTrades();}
 
+  observeRuntime?.({kind:'event',portfolioId,symbol:config.symbol,event:'POSITION_RECONCILED',eventType:'SYNC',
+    data:{previousPositionSize,positionSize,entryPrice:position?.entry_price,tradeId:activeTrade?.tradeId,
+      attributionStatus:activeTrade?.attributionStatus,lifecycleReconciliationPending:activeTrade?.lifecycleReconciliationPending},
+    context:{exchangePosition:position,localTrade:activeTrade,refreshStartedAt:new Date(now)}});
   cachedPosition = position;
   cachedPositionSize = positionSize;
   previousPositionSize = positionSize;
@@ -560,16 +612,31 @@ async function refreshCandlesIfNeeded(nowSec:number) {
   return true;
 }
 
+class PortfolioProductModeMismatch extends Error {
+  readonly code = 'PORTFOLIO_PRODUCT_MODE_MISMATCH';
+  constructor(readonly storedProductId:number, readonly resolvedProductId:number|null) {
+    super('Portfolio product identity mismatch');
+    this.name = 'PortfolioProductModeMismatch';
+  }
+}
+
+function assertPortfolioProductCompatibility() {
+  const resolvedId=Number(product?.id);
+  if(resolvedId!==runtimeProductId)throw new PortfolioProductModeMismatch(runtimeProductId,Number.isFinite(resolvedId)?resolvedId:null);
+}
+
 async function cycle() {
   const decisionLogCycleStartedAt=Date.now();
   // The dashboard control is the master switch for NEW algo entries.
   // Monitoring stays alive even when the robot is stopped so an already-open
   // Delta position, its SL/TP and its eventual close continue to update on UI.
   const control = readControl(portfolioId);
-  const tradingEnabled = control.running === true;
+  const tradingEnabled = control.running === true && config.autoTrade && config.verified === true;
+  observeRuntime?.({kind:'event',portfolioId,symbol:config.symbol,event:'ROBOT_EXECUTION_STATE',eventType:'ROBOT',
+    data:{running:control.running===true,tradingEnabled,autoTrade:config.autoTrade,verified:config.verified}});
 
   product ||= await getProduct(config.symbol);
-  if(Number(product?.id)!==runtimeProductId)throw new Error('Portfolio product identity mismatch');
+  assertPortfolioProductCompatibility();
   if (!product || product.state !== 'live' || product.trading_status !== 'operational') {
     throw new Error(`Product ${config.symbol} is not operational`);
   }
@@ -579,6 +646,9 @@ async function cycle() {
   const lastTradedPrice = Number(ticker.close ?? 0);
   const markPrice = Number(ticker.mark_price ?? 0);
   const spotPrice = Number(ticker.spot_price ?? 0);
+  const bestBid=numeric(ticker.quotes?.best_bid),bestAsk=numeric(ticker.quotes?.best_ask);
+  const spread=bestBid!=null&&bestAsk!=null&&bestBid>0&&bestAsk>=bestBid?
+    {bid:bestBid,ask:bestAsk,amount:bestAsk-bestBid,pct:(bestAsk-bestBid)/((bestAsk+bestBid)/2)*100,observedAt:tickerObservedAt}:null;
   const lastPrice = config.priceSource === 'last'
     ? (lastTradedPrice || markPrice || spotPrice)
     : config.priceSource === 'spot'
@@ -852,16 +922,18 @@ async function cycle() {
             } else {
               const side:'buy'|'sell' = pending.direction === 'long' ? 'buy' : 'sell';
               const entrySetup={direction:pending.direction,trigger:Number(pending.trigger),sl:Number(pending.sl),candleTime:Number(pending.candleTime),configRevision:entryConfigRevision};
-              const finalInput=()=>({identity:{portfolioId,environment:runtimeEnvironment!,symbol:config.symbol,productId:runtimeProductId},setup:entrySetup,config:{revision:entryConfigRevision,autoTrade:config.autoTrade,entryValidCandles:config.entryValidCandles,resolutionSec:config.resolutionSec,riskPct:config.riskPct,rr:config.rr,minStopPct:config.minStopPct,maxEffectiveLeverage:config.maxEffectiveLeverage,maxFeeRiskPct:config.maxFeeRiskPct,gstPct:config.gstPct},product:{id:Number(product.id),contractValue:Number(product.contract_value),tickSize:Number(product.tick_size||0.01),takerRate:Number(product.taker_commission_rate??0.0005)}});
-              const finalDependencies=()=>({currentConfig:()=>({...finalInput().config,revision:configRevision}),dailyLossEntryAllowed:()=>dailyLossEntryAllowed(dailyLossStateReady,lossStreak,config.maxDailyLosses),robotRunning:()=>!shuttingDown&&readControl(portfolioId).running===true,refreshConfig:async()=>{await refreshRuntimeSettings();return {revision:configRevision,autoTrade:config.autoTrade,entryValidCandles:config.entryValidCandles,resolutionSec:config.resolutionSec,riskPct:config.riskPct,rr:config.rr,minStopPct:config.minStopPct,maxEffectiveLeverage:config.maxEffectiveLeverage,maxFeeRiskPct:config.maxFeeRiskPct,gstPct:config.gstPct};},currentPending:()=>pending,latestCompletedCandleTime:()=>Math.max(Number(completedCandles.at(-1)?.time||0),Math.floor(Date.now()/1000/config.resolutionSec)*config.resolutionSec-config.resolutionSec),leaseOwned:()=>verifyLeaseOwnership(entryLease),leaseLost:()=>entryExecution.ownershipLost(),portfolioEntryAllowed:async()=>!shuttingDown&&await portfolioEntryAllowed(portfolioId)&&await renewLease(portfolioEntryLease,90_000)&&await verifyLeaseOwnership(portfolioEntryLease),portfolio:async()=>{const current=await findPortfolioById(portfolioId);return current?{id:String(current._id),environment:current.environment,symbol:current.symbol,productId:current.productId}:null;},position:async()=>{const position=await getPosition(runtimeProductId);const size=explicitPositionSize(position);if(size!==null)observeEntryPosition(size);return position;},availableMargin:async()=>{const wallet=await getWallet(),usd=(wallet?.result||[]).find((w:any)=>w.asset_symbol==='USD')||(wallet?.result||[])[0];return Number(usd?.available_balance_for_robo||usd?.available_balance||0);}});
+              const finalInput=()=>({identity:{portfolioId,environment:runtimeEnvironment!,symbol:config.symbol,productId:runtimeProductId},setup:entrySetup,config:{revision:entryConfigRevision,autoTrade:config.autoTrade,verified:config.verified,entryValidCandles:config.entryValidCandles,resolutionSec:config.resolutionSec,riskPct:config.riskPct,rr:config.rr,minStopPct:config.minStopPct,maxEffectiveLeverage:config.maxEffectiveLeverage,maxFeeRiskPct:config.maxFeeRiskPct,gstPct:config.gstPct},product:{id:Number(product.id),contractValue:Number(product.contract_value),tickSize:Number(product.tick_size||0.01),takerRate:Number(product.taker_commission_rate??0.0005)}});
+              const finalDependencies=()=>({currentConfig:()=>({...finalInput().config,revision:configRevision}),dailyLossEntryAllowed:()=>dailyLossEntryAllowed(dailyLossStateReady,lossStreak,config.maxDailyLosses),robotRunning:()=>!shuttingDown&&readControl(portfolioId).running===true,refreshConfig:async()=>{await refreshRuntimeSettings();return {revision:configRevision,autoTrade:config.autoTrade,verified:config.verified,entryValidCandles:config.entryValidCandles,resolutionSec:config.resolutionSec,riskPct:config.riskPct,rr:config.rr,minStopPct:config.minStopPct,maxEffectiveLeverage:config.maxEffectiveLeverage,maxFeeRiskPct:config.maxFeeRiskPct,gstPct:config.gstPct};},currentPending:()=>pending,latestCompletedCandleTime:()=>Math.max(Number(completedCandles.at(-1)?.time||0),Math.floor(Date.now()/1000/config.resolutionSec)*config.resolutionSec-config.resolutionSec),leaseOwned:()=>verifyLeaseOwnership(entryLease),leaseLost:()=>entryExecution.ownershipLost(),portfolioEntryAllowed:async()=>!shuttingDown&&await portfolioEntryAllowed(portfolioId)&&await renewLease(portfolioEntryLease,90_000)&&await verifyLeaseOwnership(portfolioEntryLease),portfolio:async()=>{const current=await findPortfolioById(portfolioId);return current?{id:String(current._id),environment:current.environment,symbol:current.symbol,productId:current.productId}:null;},position:async()=>{const position=await getPosition(runtimeProductId);const size=explicitPositionSize(position);if(size!==null)observeEntryPosition(size);return position;},availableMargin:async()=>{const wallet=await getWallet(),usd=(wallet?.result||[]).find((w:any)=>w.asset_symbol==='USD')||(wallet?.result||[])[0];return Number(usd?.available_balance_for_robo||usd?.available_balance||0);}});
               const finalSafety=await finalPreOrderSafetyCheck(finalInput(),finalDependencies());
               if(!finalSafety.ok){decision={action:'SKIP',reason:finalSafety.reason};addTradeEvent(finalSafety.reason,{direction:entrySetup.direction,signalCandleTime:entrySetup.candleTime,...('guard'in finalSafety?{guard:finalSafety.guard}:{})});return;}
               const identity={portfolioId,environment:runtimeEnvironment!,productId:Number(product.id),side,signalCandleTime:Number(pending.candleTime),configRevision:entryConfigRevision};
               const intentId=entryIntentId(identity),oid=entryClientOrderId(identity);
               const {contracts:finalContracts,riskAmount:finalRiskAmount,sl:finalSl,tp:finalTp,takerRate:finalTakerRate}=finalSafety;
-              const intent={intentId,portfolioId,environment:runtimeEnvironment!,symbol:config.symbol,productId:Number(product.id),side,direction:entrySetup.direction,contracts:finalContracts,clientOrderId:oid,signalCandleTime:entrySetup.candleTime,configRevision:entryConfigRevision,trigger:entrySetup.trigger,sl:finalSl,tp:finalTp,contractValue,riskAmount:finalRiskAmount,takerRate:finalTakerRate,gstPct:config.gstPct,strategyConfig:botStrategyConfigSnapshot()};
+              const entrySnapshot={equityAtEntry:lastWalletFetchAt>0?cachedEquity:null,...(spread&&Date.now()-Date.parse(tickerObservedAt)<=5_000?{entryBid:spread.bid,entryAsk:spread.ask,entrySpreadAmount:spread.amount,entrySpreadPct:spread.pct,entrySpreadTime:new Date(tickerObservedAt)}:{})};
+              const intent={entrySnapshot,intentId,portfolioId,environment:runtimeEnvironment!,symbol:config.symbol,productId:Number(product.id),side,direction:entrySetup.direction,contracts:finalContracts,clientOrderId:oid,signalCandleTime:entrySetup.candleTime,configRevision:entryConfigRevision,trigger:entrySetup.trigger,sl:finalSl,tp:finalTp,contractValue,riskAmount:finalRiskAmount,takerRate:finalTakerRate,gstPct:config.gstPct,strategyConfig:botStrategyConfigSnapshot()};
               addTradeEvent('ENTRY_INTENT_PREPARED',{intentId,clientOrderId:oid,signalCandleTime:pending.candleTime});
               const submission=await submitPreparedEntryIntent(intent,async clientOrderId=>{await entryExecution.assertOwnership();addTradeEvent('ENTRY_SUBMISSION_STARTED',{intentId,clientOrderId});const adjacentSafety=await finalPreOrderSafetyCheck({...finalInput(),expectedContracts:finalContracts},finalDependencies());if(!adjacentSafety.ok){addTradeEvent(adjacentSafety.reason,{intentId,direction:entrySetup.direction,signalCandleTime:entrySetup.candleTime,...('guard'in adjacentSafety?{guard:adjacentSafety.guard}:{})});throw new EntryNotTransmittedError(adjacentSafety.reason);}const dispatchState=finalPreOrderDispatchStateCheck(finalInput(),finalDependencies());if(!dispatchState.ok){addTradeEvent(dispatchState.reason,{intentId,direction:entrySetup.direction,signalCandleTime:entrySetup.candleTime});throw new EntryNotTransmittedError(dispatchState.reason);}return placeMarketOrder(Number(product.id),side,adjacentSafety.contracts,clientOrderId);});
+              observeRuntime?.({kind:'event',portfolioId,symbol:config.symbol,event:'ENTRY_SUBMISSION_RESULT',eventType:'TRADE',data:{intentId,intent,submission}});
               if(submission.status!=='CONFIRMED'){
                 blockingEntryIntent=submission.status==='REJECTED'?null:submission.intent;
                 decision={action:'WAIT',reason:submission.status==='AMBIGUOUS'?'AMBIGUOUS_ENTRY_RECONCILIATION':submission.status==='REJECTED'?(submission.error as EntryNotTransmittedError).reason:'ENTRY_INTENT_BLOCKED'};
@@ -875,9 +947,9 @@ async function cycle() {
 
               // Once the market order has already been sent, STOP must NOT prevent
               // protective SL/TP placement. Protecting the open position takes priority.
-              activeTrade = { direction:entrySetup.direction, entryPrice:Number(order?.result?.average_fill_price??entrySetup.trigger), actualEntryPrice:numeric(order?.result?.average_fill_price), trigger:entrySetup.trigger, sl:finalSl, tp:finalTp, contracts:finalContracts, ownedContracts:finalContracts, contractValue, positionSize:entrySetup.direction === 'long' ? finalContracts : -finalContracts, orderId:order?.result?.id, clientOrderId:oid, entryFillIds:Array.isArray(order?.result?.fill_ids)?order.result.fill_ids.map(String):[],entryIntentId:intentId,protectionState:'PENDING',openedAt:Date.now(), lastObservedAt:Date.now(), riskAmount:finalRiskAmount, takerRate:finalTakerRate, gstPct:config.gstPct, source:'bot', attributionStatus:'BOT_CONFIRMED', mixedPosition:false, exchangeSync:null, strategyConfig:botStrategyConfigSnapshot() };
+              activeTrade = { entrySnapshot, direction:entrySetup.direction, entryPrice:Number(order?.result?.average_fill_price??entrySetup.trigger), actualEntryPrice:numeric(order?.result?.average_fill_price), trigger:entrySetup.trigger, sl:finalSl, tp:finalTp, contracts:finalContracts, ownedContracts:finalContracts, contractValue, positionSize:entrySetup.direction === 'long' ? finalContracts : -finalContracts, orderId:order?.result?.id, clientOrderId:oid, entryFillIds:Array.isArray(order?.result?.fill_ids)?order.result.fill_ids.map(String):[],entryIntentId:intentId,protectionState:'PENDING',openedAt:Date.now(), lastObservedAt:Date.now(), riskAmount:finalRiskAmount, takerRate:finalTakerRate, gstPct:config.gstPct, source:'bot', attributionStatus:'BOT_CONFIRMED', mixedPosition:false, exchangeSync:null, strategyConfig:botStrategyConfigSnapshot() };
               const persisted=await persistOpenBotTrade(activeTrade,Number(product.id),config.symbol,undefined,tradeContext());
-              activeTrade.tradeId=persisted?.tradeId;
+              activeTrade.tradeId=persisted?.tradeId;activeTrade.lifecycle=persisted;
               await markEntryIntentOwnershipPersisted(intentId);
               addTradeEvent('ENTRY_CONFIRMED_PERSISTED',{intentId,orderId:order?.result?.id??null,protectionState:'PENDING'});
               addTradeEvent('PROTECTION_PENDING',{tradeId:activeTrade.tradeId,sl:finalSl,tp:finalTp});
@@ -889,7 +961,7 @@ async function cycle() {
                   ? 'spot_price'
                   : 'last_traded_price';
               let bracketActive=false;
-              try{await placeBracket(Number(product.id), finalSl, finalTp, triggerMethod);bracketActive=true;activeTrade.protectionState='ACTIVE';await updateTradeProtectionState(activeTrade.tradeId,'ACTIVE');addTradeEvent('PROTECTION_ACTIVE',{tradeId:activeTrade.tradeId,sl:finalSl,tp:finalTp});}
+              try{const protectionPosition=await getPosition(Number(product.id));if(explicitPositionSize(protectionPosition)===null||Number(protectionPosition.size)===0||Math.sign(Number(protectionPosition.size))!==(entrySetup.direction==='long'?1:-1))throw new Error('PROTECTION_POSITION_NOT_OPEN');await updateTradeProtectionState(activeTrade.tradeId,'PENDING');await placeBracket(Number(product.id), finalSl, finalTp, triggerMethod);bracketActive=true;activeTrade.protectionState='ACTIVE';await updateTradeProtectionState(activeTrade.tradeId,'ACTIVE');addTradeEvent('PROTECTION_ACTIVE',{tradeId:activeTrade.tradeId,sl:finalSl,tp:finalTp});}
               catch(error:any){activeTrade.protectionState='REPAIR_REQUIRED';await updateTradeProtectionState(activeTrade.tradeId,'REPAIR_REQUIRED');addTradeEvent('PROTECTION_REPAIR_REQUIRED',{tradeId:activeTrade.tradeId,error:error?.message||String(error)});}
 
               if (latest) {
@@ -942,7 +1014,7 @@ async function cycle() {
   });
 
   const latestControl = readControl(portfolioId);
-  const robotRunningNow = latestControl.running === true;
+  const robotRunningNow = latestControl.running === true && config.autoTrade && config.verified === true;
 
   const recovered = connectionState === 'offline';
   connectionState = 'online';
@@ -953,15 +1025,18 @@ async function cycle() {
 
   writeStatus({
     portfolioId,
+    appMode:config.appMode,
     environment:runtimeEnvironment,
     running:robotRunningNow,
     updatedAt:new Date().toISOString(),
     connection:{ state:'online', lastOnlineAt, lastOfflineAt, error:null, consecutiveFailures:0 },
     env:config.env,
     autoTrade:config.autoTrade,
+    verified:config.verified,
     configuredAutoTrade:config.autoTrade,
     effectiveAutoTrade:robotRunningNow&&config.autoTrade,
     configRevision,
+    entryRevision:entrySettingsRevision,
     strategyStateReady,
     symbol:config.symbol,
     productId:product.id,
@@ -973,12 +1048,13 @@ async function cycle() {
     lastTradedPrice,
     spotPrice,
     tickerTimestamp:ticker.timestamp,
+    spread,
     equity:cachedEquity,
     available:cachedAvailable,
     riskBase:'available',
     position:{size:cachedPositionSize, entryPrice:Number(cachedPosition?.entry_price||0)},
     pending,
-    activeTrade,
+    activeTrade:activeTrade?{...activeTrade,...activeTrade.lifecycle,lifecycle:undefined,sl:activeTrade.lifecycle?.currentSL??activeTrade.sl,tp:activeTrade.lifecycle?.currentTarget??activeTrade.tp}:null,
     protection:activeTrade?.source==='bot'?{state:activeTrade.protectionState??'REPAIR_REQUIRED',status:activeTrade.protectionState==='ACTIVE'?'PROTECTED':activeTrade.protectionState==='PENDING'?'PROTECTION PENDING':'PROTECTION REPAIR REQUIRED'}:null,
     lossStreak,
     dailyLossState:{ready:dailyLossStateReady,tradingDay:currentDay,error:dailyLossStateError},
@@ -1012,7 +1088,7 @@ async function cycle() {
     currentStatus: !robotRunningNow
       ? cachedPositionSize !== 0
         ? { action:'STOPPED', reason:'POSITION_STILL_OPEN', source:activeTrade?.source || 'exchange', at:new Date().toISOString() }
-        : { action:'STOPPED', reason:'ROBOT_STOPPED', at:new Date().toISOString() }
+        : { action:'STOPPED', reason:!config.verified?'ENVIRONMENT_NOT_VERIFIED':!config.autoTrade?'AUTO_TRADE_OFF':'ROBOT_STOPPED', at:new Date().toISOString() }
       : cachedPositionSize !== 0
         ? activeTrade?.source === 'exchange_existing'
           ? { action:'ACTIVE', reason:'EXISTING_POSITION', source:'exchange_existing', at:new Date().toISOString() }
@@ -1026,13 +1102,24 @@ async function cycle() {
   },portfolioId);
 }
 
+function stopUnpermittedEntries(){
+  pending=null;
+  entrySignalsBlockedThrough=Math.max(entrySignalsBlockedThrough,lastSetupCandle,Math.floor(Date.now()/1000/config.resolutionSec)*config.resolutionSec-config.resolutionSec);
+  if(readControl(portfolioId).running===true)writeControl({running:false},portfolioId);
+}
+
 async function refreshRuntimeSettings(){
-  const overrides=validateRuntimeSettings(await getRuntimeSettingOverrides(portfolioId));
-  const next={...runtimeFallbackSettings,...overrides};
+  let snapshot,overrides;
+  try{snapshot=await getRuntimeSettingsSnapshot(portfolioId);overrides=validateRuntimeSettings(snapshot.values);}
+  catch(error){config.verified=false;stopUnpermittedEntries();throw error;}
+  const next:Record<string,string|number|boolean>={...runtimeFallbackSettings,...overrides,VERIFIED:overrides.VERIFIED===true};
+  const generationChanged=entrySettingsRevision!==snapshot.entryRevision;
+  if(next.VERIFIED!==true||next.AUTO_TRADE!==true){config.verified=false;stopUnpermittedEntries();}
   const changed=changedRuntimeSettings(effectiveRuntimeSettings,next);
-  if(!changed.length)return false;
-  const oldConfigRevision=configRevision,newConfigRevision=runtimeSettingsRevision(next);
-  const invalidatesPending=changed.some(key=>pendingInvalidatingKeys.has(key));
+  if(!changed.length&&!generationChanged){config.verified=next.VERIFIED===true;return false;}
+  const oldConfigRevision=configRevision,newConfigRevision=runtimeSettingsRevision({...next,ENTRY_REVISION:snapshot.entryRevision});
+  const invalidatesPending=generationChanged||changed.some(key=>pendingInvalidatingKeys.has(key));
+  if(invalidatesPending)entrySignalsBlockedThrough=Math.max(entrySignalsBlockedThrough,lastSetupCandle,Math.floor(Date.now()/1000/config.resolutionSec)*config.resolutionSec-config.resolutionSec);
   const rebuildsStrategy=changed.some(key=>strategyStateKeys.has(key));
   if(invalidatesPending&&pending){
     addTradeEvent('PENDING_CANCELLED_CONFIG_CHANGE',{direction:pending.direction,trigger:pending.trigger,signalCandleTime:pending.candleTime,oldConfigRevision,newConfigRevision,changedSettings:changed});
@@ -1046,8 +1133,10 @@ async function refreshRuntimeSettings(){
     lastSetupCandle=0;
     addTradeEvent('STRATEGY_STATE_REBUILDING',{oldConfigRevision,newConfigRevision,changedSettings:changed});
   }
+  if(activeTrade)openTradeProtectionPriceSource();
   applyRuntimeConfigOverrides(next);
   effectiveRuntimeSettings=next;
+  entrySettingsRevision=snapshot.entryRevision;
   configRevision=newConfigRevision;
   addTradeEvent('RUNTIME_CONFIG_UPDATED',{oldConfigRevision,newConfigRevision,changedSettings:changed});
   if(!rebuildsStrategy)addTradeEvent('STRATEGY_STATE_READY',{configRevision});
@@ -1064,35 +1153,50 @@ async function main() {
   if(!await portfolioEntryAllowed(portfolioId)){clearInterval(leaseHeartbeat);await closeMongoConnection().catch(()=>{});return;}
   const portfolio=await findPortfolioById(portfolioId);
   if(!portfolio)throw new Error('Portfolio runtime configuration not found');
-  runtimeEnvironment=portfolio.environment;
   runtimeProductId=portfolio.productId;
   const resolved=configurePortfolioRuntime(portfolio.environment,portfolio.symbol);
+  runtimeEnvironment=resolved.environment;
   runtimeFallbackSettings=runtimeConfigSnapshot();
   try {
-    const overrides=validateRuntimeSettings(await getRuntimeSettingOverrides(portfolioId));
-    effectiveRuntimeSettings={...runtimeFallbackSettings,...overrides};
+    const snapshot=await getRuntimeSettingsSnapshot(portfolioId);
+    const overrides=validateRuntimeSettings(snapshot.values);
+    entrySettingsRevision=snapshot.entryRevision;
+    effectiveRuntimeSettings={...runtimeFallbackSettings,...overrides,VERIFIED:overrides.VERIFIED===true};
     applyRuntimeConfigOverrides(effectiveRuntimeSettings);
-    configRevision=runtimeSettingsRevision(effectiveRuntimeSettings);
+    configRevision=runtimeSettingsRevision({...effectiveRuntimeSettings,ENTRY_REVISION:entrySettingsRevision});
     if(Object.keys(overrides).length)addTradeEvent('RUNTIME_SETTINGS_LOADED',{count:Object.keys(overrides).length,source:'MongoDB',appliedAt:'WORKER_START'});
   } catch(error:any) {
     addTradeEvent('RUNTIME_SETTINGS_FALLBACK',{source:'.env',reason:error?.message||String(error)});
   }
   if(!resolved.credentialsConfigured){
-    writeStatus({portfolioId,environment:portfolio.environment,symbol:portfolio.symbol,productId:portfolio.productId,running:false,credentialsConfigured:false,autoTrade:config.autoTrade,configuredAutoTrade:config.autoTrade,effectiveAutoTrade:false,currentStatus:{action:'STOPPED',reason:'CREDENTIALS_NOT_CONFIGURED'},message:'Credentials Not Configured',updatedAt:new Date().toISOString()},portfolioId);
+    writeStatus({portfolioId,appMode:config.appMode,environment:portfolio.environment,symbol:portfolio.symbol,productId:portfolio.productId,running:false,credentialsConfigured:false,autoTrade:config.autoTrade,verified:config.verified,configuredAutoTrade:config.autoTrade,effectiveAutoTrade:false,currentStatus:{action:'STOPPED',reason:'CREDENTIALS_NOT_CONFIGURED'},message:'Credentials Not Configured',updatedAt:new Date().toISOString()},portfolioId);
   }
-  await restoreCurrentDailyLossStreak();
-  try{await reconcileEntryIntents();}catch(error:any){addTradeEvent('ENTRY_RECONCILIATION_PENDING',{reason:error?.message||String(error)});blockingEntryIntent={state:'AMBIGUOUS',intentId:null,clientOrderId:null,status:'ENTRY_INTENT_LOOKUP_FAILED'};}
+  let runtimeRestored=false;
   while (!shuttingDown) {
     try {
       await refreshRuntimeSettings();
     } catch {
-      // Keep the last effective value and continue monitoring/trading safely.
+      // Entries fail closed; existing-position monitoring and protection continue.
       // MongoDB remains authoritative and the next cycle retries the refresh.
     }
     try {
+      if(!runtimeRestored){
+        // Validate the stored identity on the selected endpoint before any
+        // restoration assumes it. Never remap or persist the resolved ID.
+        product ||= await getProduct(config.symbol);
+        assertPortfolioProductCompatibility();
+        await restoreCurrentDailyLossStreak();
+        try{await reconcileEntryIntents();}catch(error:any){addTradeEvent('ENTRY_RECONCILIATION_PENDING',{reason:error?.message||String(error)});blockingEntryIntent={state:'AMBIGUOUS',intentId:null,clientOrderId:null,status:'ENTRY_INTENT_LOOKUP_FAILED'};}
+        runtimeRestored=true;
+      }
       await cycle();
     } catch (e:any) {
+      observeRuntime?.({kind:'event',portfolioId,symbol:config.symbol,event:'WORKER_CYCLE_FAILED',eventType:'ERROR',data:{subsystem:'worker',operation:'cycle',error:e}});
       const classified=deltaErrorDetails(e),message=`${classified.code}: ${classified.message}`;
+      const productMismatch=e instanceof PortfolioProductModeMismatch?e:null;
+      const statusMessage=productMismatch
+        ? `Portfolio metadata incompatible with ${config.appMode.toUpperCase()} mode. Stored product ID ${productMismatch.storedProductId} does not match product ID ${productMismatch.resolvedProductId??'unavailable'} for ${config.symbol} on the selected Delta endpoint. The metadata may belong to a different Delta environment or no longer match this endpoint. No product ID was changed; review the portfolio metadata before restarting its worker.`
+        : message;
       const wasOnline = connectionState === 'online';
       connectionState = classified.network?'offline':'error';
       connectionError = message;
@@ -1105,17 +1209,23 @@ async function main() {
       // connectivity returns a normal successful cycle restores ONLINE state.
       writeStatus({
         portfolioId,
+        appMode:config.appMode,
         environment:runtimeEnvironment,
         credentialsConfigured:Boolean(config.apiKey&&config.apiSecret),
-        running:readControl(portfolioId).running,
+        running:readControl(portfolioId).running===true&&config.autoTrade&&config.verified,
         updatedAt:new Date().toISOString(),
         env:config.env,
             symbol:config.symbol,
             autoTrade:config.autoTrade,
+            verified:config.verified,
             configuredAutoTrade:config.autoTrade,
-            effectiveAutoTrade:readControl(portfolioId).running===true&&config.autoTrade,
-        connection:{ state:connectionState,code:classified.code, lastOnlineAt, lastOfflineAt, error:connectionError, consecutiveFailures:consecutiveNetworkFailures },
-        error:message,
+            effectiveAutoTrade:readControl(portfolioId).running===true&&config.autoTrade&&config.verified,
+        connection:{ state:connectionState,code:productMismatch?.code??classified.code, lastOnlineAt, lastOfflineAt, error:statusMessage, consecutiveFailures:consecutiveNetworkFailures },
+        error:statusMessage,
+        ...(productMismatch?{
+          currentStatus:{action:'UNAVAILABLE',reason:productMismatch.code},
+          productCompatibility:{portfolioId,symbol:config.symbol,storedProductId:productMismatch.storedProductId,resolvedProductId:productMismatch.resolvedProductId,appMode:config.appMode}
+        }:{}),
         tradeEvents,
         logs:uiLogs
       },portfolioId);

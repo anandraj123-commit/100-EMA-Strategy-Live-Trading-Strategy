@@ -1,10 +1,10 @@
 import bcrypt from 'bcryptjs';
-import { loadEnvConfig } from '@next/env';
+import { getModeConfig } from '../lib/app-mode';
 import { getDb } from '../lib/db/mongodb';
 import type { UserDocument } from '../models/User';
 
 async function main() {
-  loadEnvConfig(process.cwd());
+  getModeConfig();
   const email = process.env.INITIAL_ADMIN_EMAIL?.trim().toLowerCase();
   const password = process.env.INITIAL_ADMIN_PASSWORD;
   if (!email || !email.includes('@')) throw new Error('Set a valid INITIAL_ADMIN_EMAIL for this command');

@@ -5,7 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import bcrypt from 'bcryptjs';
-import { MongoClient } from 'mongodb';
+import { MongoClient, ObjectId } from 'mongodb';
 import { NextRequest } from 'next/server';
 
 const testMongoUri = process.env.AUTH_TEST_MONGODB_URI;
@@ -17,9 +17,9 @@ test('MongoDB authentication lifecycle and atomic rate limiting', { skip: !testM
   const mongo = new MongoClient(testMongoUri as string);
 
   process.chdir(temporaryDirectory);
-  process.env.MONGODB_URI = testMongoUri;
-  process.env.MONGODB_DB = databaseName;
-  process.env.AUTH_SECRET = 'integration-test-secret-with-at-least-32-characters';
+  process.env.MONGODB_URI_TESTING = testMongoUri;
+  process.env.MONGODB_DB_TESTING = databaseName;
+  process.env.AUTH_SECRET_TESTING = 'integration-test-secret-with-at-least-32-characters';
   process.env.TRUST_PROXY_IP_HEADERS = 'false';
 
   try {
@@ -33,6 +33,9 @@ test('MongoDB authentication lifecycle and atomic rate limiting', { skip: !testM
       updatedAt: new Date(),
     })).insertedId;
 
+    const portfolioId=new ObjectId();
+    await db.collection('portfolio').insertOne({_id:portfolioId,symbol:'XAUTUSD',productId:27,environment:'demo',createdAt:new Date(),updatedAt:new Date()});
+    const query=`portfolioId=${portfolioId.toHexString()}`;
     const loginRoute = await import('../app/api/auth/login/route');
     const logoutRoute = await import('../app/api/auth/logout/route');
     const sessionRoute = await import('../app/api/auth/session/route');
@@ -64,7 +67,7 @@ test('MongoDB authentication lifecycle and atomic rate limiting', { skip: !testM
     assert.doesNotMatch(setCookie, /Secure/i);
     const cookie = setCookie.split(';', 1)[0];
 
-    const authenticatedStatus = await statusRoute.GET(new NextRequest('http://localhost/api/status', { headers: { cookie } }));
+    const authenticatedStatus = await statusRoute.GET(new NextRequest(`http://localhost/api/status?${query}`, { headers: { cookie } }));
     assert.equal(authenticatedStatus.status, 200);
 
     const sessionResponse = await sessionRoute.GET(new NextRequest('http://localhost/api/auth/session', { headers: { cookie } }));
@@ -75,23 +78,27 @@ test('MongoDB authentication lifecycle and atomic rate limiting', { skip: !testM
     const controlRequest = (token?: string) => new NextRequest('http://localhost/api/control', {
       method: 'POST',
       headers: { cookie, origin: 'http://localhost', 'content-type': 'application/json', ...(token ? { 'x-csrf-token': token } : {}) },
-      body: JSON.stringify({ running: true }),
+      body: JSON.stringify({ running: true,portfolioId:portfolioId.toHexString() }),
     });
     assert.equal((await controlRoute.POST(controlRequest())).status, 403);
     assert.equal((await controlRoute.POST(controlRequest('invalid'))).status, 403);
+    assert.equal((await controlRoute.POST(controlRequest(csrfToken))).status, 409);
+    const settingsRepository=await import('../lib/settings/repository');
+    await settingsRepository.saveRuntimeSettingOverrides({AUTO_TRADE:true},'admin@example.test',portfolioId.toHexString());
+    await settingsRepository.saveRuntimeSettingOverrides({VERIFIED:true},'admin@example.test',portfolioId.toHexString());
     assert.equal((await controlRoute.POST(controlRequest(csrfToken))).status, 200);
 
-    const settingsRead = await settingsRoute.GET(new NextRequest('http://localhost/api/settings', { headers: { cookie } }));
+    const settingsRead = await settingsRoute.GET(new NextRequest(`http://localhost/api/settings?${query}`, { headers: { cookie } }));
     assert.equal(settingsRead.status, 200);
-    assert.equal((await settingsRead.json()).values.SYMBOL, process.env.SYMBOL || 'XAUTUSD');
+    assert.equal((await settingsRead.json()).values.VERIFIED,true);
     const settingsWrite = (token?: string, values: any = { AUTO_TRADE:true, EMA_LENGTH:120 }) => settingsRoute.PUT(new NextRequest('http://localhost/api/settings', {
-      method:'PUT', headers:{ cookie, origin:'http://localhost', 'content-type':'application/json', ...(token ? { 'x-csrf-token':token } : {}) }, body:JSON.stringify({ values })
+      method:'PUT', headers:{ cookie, origin:'http://localhost', 'content-type':'application/json', ...(token ? { 'x-csrf-token':token } : {}) }, body:JSON.stringify({ values,portfolioId:portfolioId.toHexString() })
     }));
     assert.equal((await settingsWrite()).status, 403);
     assert.equal((await settingsWrite(csrfToken, { DELTA_API_SECRET:'forbidden' })).status, 400);
     assert.equal((await settingsWrite(csrfToken)).status, 200);
-    const settingsReload = await settingsRoute.GET(new NextRequest('http://localhost/api/settings', { headers:{ cookie } }));
-    assert.deepEqual((await settingsReload.json()).overrides, { AUTO_TRADE:true, EMA_LENGTH:120 });
+    const settingsReload = await settingsRoute.GET(new NextRequest(`http://localhost/api/settings?${query}`, { headers:{ cookie } }));
+    assert.deepEqual((await settingsReload.json()).overrides, { AUTO_TRADE:true, EMA_LENGTH:120, VERIFIED:false });
 
     const viewerId = (await db.collection('users').insertOne({
       email: 'viewer@example.test', passwordHash: 'unused', role: 'viewer', createdAt: new Date(), updatedAt: new Date(),
@@ -102,7 +109,7 @@ test('MongoDB authentication lifecycle and atomic rate limiting', { skip: !testM
     const forbidden = await controlRoute.POST(new NextRequest('http://localhost/api/control', {
       method: 'POST',
       headers: { cookie: viewerCookie, origin: 'http://localhost', 'content-type': 'application/json', 'x-csrf-token': viewerCsrf },
-      body: JSON.stringify({ running: true }),
+      body: JSON.stringify({ running: true,portfolioId:portfolioId.toHexString() }),
     }));
     assert.equal(forbidden.status, 403);
 
@@ -110,7 +117,7 @@ test('MongoDB authentication lifecycle and atomic rate limiting', { skip: !testM
       method: 'POST', headers: { cookie, origin: 'http://localhost', 'x-csrf-token': csrfToken },
     }));
     assert.equal(logout.status, 200);
-    assert.equal((await statusRoute.GET(new NextRequest('http://localhost/api/status', { headers: { cookie } }))).status, 401);
+    assert.equal((await statusRoute.GET(new NextRequest(`http://localhost/api/status?${query}`, { headers: { cookie } }))).status, 401);
 
     const expired = await sessionModule.createSession(adminId);
     const expiredHash = crypto.createHash('sha256').update(expired.token).digest('hex');
@@ -134,6 +141,7 @@ test('MongoDB authentication lifecycle and atomic rate limiting', { skip: !testM
     process.chdir(originalCwd);
     await mongo.db(databaseName).dropDatabase().catch(() => undefined);
     await mongo.close().catch(() => undefined);
+    const {closeMongoConnection}=await import('../lib/db/mongodb');await closeMongoConnection();
     fs.rmSync(temporaryDirectory, { recursive: true, force: true });
   }
 });
