@@ -33,4 +33,5 @@ jobs:
           RESOLUTION: 5m
           MONGODB_URI_DEVELOPMENT: ${{ secrets.MONGODB_URI_DEVELOPMENT }}
           MONGODB_DB_DEVELOPMENT: ${{ secrets.MONGODB_DB_DEVELOPMENT }}
+          AUTH_SECRET_DEVELOPMENT: ${{ secrets.AUTH_SECRET_DEVELOPMENT }}
         run: npm run validate
