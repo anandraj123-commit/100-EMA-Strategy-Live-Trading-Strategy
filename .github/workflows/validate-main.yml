@@ -30,5 +30,6 @@ jobs:
 
       - name: Run complete validation
         env:
+          APP_MODE: development
           RESOLUTION: 5m
         run: npm run validate
