@@ -32,4 +32,5 @@ jobs:
           APP_MODE: development
           RESOLUTION: 5m
           MONGODB_URI_DEVELOPMENT: ${{ secrets.MONGODB_URI_DEVELOPMENT }}
+          MONGODB_DB_DEVELOPMENT: ${{ secrets.MONGODB_DB_DEVELOPMENT }}
         run: npm run validate
