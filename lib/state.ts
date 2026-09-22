@@ -1,3 +1,5 @@
+import { observeRuntime } from './runtime-events/logger';
+export { observeRuntime } from './runtime-events/logger';
 import fs from 'node:fs';
 import path from 'node:path';
 
@@ -17,6 +19,10 @@ export function readStatus(portfolioId?:string): BotStatus {
 export function readControl(portfolioId?:string) {
   try { return JSON.parse(fs.readFileSync(controlFile(portfolioId), 'utf8')); } catch { return { running:false }; }
 }
-export function writeControl(v:{running:boolean},portfolioId?:string) { fs.writeFileSync(controlFile(portfolioId), JSON.stringify(v, null, 2)); }
+export function writeControl(v:{running:boolean},portfolioId?:string) {
+  const previous=readControl(portfolioId).running===true;
+  fs.writeFileSync(controlFile(portfolioId), JSON.stringify(v, null, 2));
+  if(portfolioId)observeRuntime({kind:'robot',portfolioId,running:v.running,previous});
+}
 export function readRuntimeActivity(portfolioId?:string){try{return JSON.parse(fs.readFileSync(activityFile(portfolioId),'utf8'));}catch{return {executionInProgress:false};}}
 export function writeRuntimeActivity(v:{executionInProgress:boolean},portfolioId?:string){fs.writeFileSync(activityFile(portfolioId),JSON.stringify({...v,updatedAt:new Date().toISOString()},null,2));}

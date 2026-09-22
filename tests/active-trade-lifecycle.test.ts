@@ -1,3 +1,4 @@
+import { RuntimeRecorder } from '../lib/runtime-events/logger';
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import fs from 'node:fs';
@@ -30,7 +31,8 @@ function repositoryFixture(){
   if(options.upsert){if(rows.has(filter.tradeId))throw Object.assign(new Error('duplicate'),{code:11000});rows.set(filter.tradeId,structuredClone(update.$setOnInsert));}
   return {matchedCount:0};
  }};
- const modules:any={'node:crypto':crypto,'./protection':protection,'./lifecycle':lifecycle,'./statistics':statistics,'../db/mongodb':{getDb:async()=>({collection:()=>collection})}};
+ const recorder=new RuntimeRecorder(async()=>{throw new Error('runtime audit database unavailable');});
+ const modules:any={'../runtime-events/logger':{observeRuntime:recorder.observe.bind(recorder)},'node:crypto':crypto,'./protection':protection,'./lifecycle':lifecycle,'./statistics':statistics,'../db/mongodb':{getDb:async()=>({collection:()=>collection})}};
  const restart=()=>{const module={exports:{} as any};vm.runInNewContext(ts.transpileModule(fs.readFileSync('lib/trades/repository.ts','utf8'),{compilerOptions:{module:ts.ModuleKind.CommonJS,target:ts.ScriptTarget.ES2022}}).outputText,{module,exports:module.exports,Date,require:(name:string)=>{assert.ok(name in modules,name);return modules[name];}});return module.exports;};
  return {rows,restart,repo:restart()};
 }

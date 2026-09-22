@@ -2,7 +2,7 @@ import { portfolioEntryAllowed } from './lib/portfolio/deletion-state';
 import { applyRuntimeConfigOverrides, config, configurePortfolioRuntime } from './lib/config';
 import { emaSeries, evaluateSetup } from './lib/strategy';
 import { DeltaRequestError,deltaErrorDetails,getCandles, getProduct, getTicker, getWallet, getPosition, getMarginedPosition, resizeProtectiveOrder, getOpenOrders, getFillsBounded, getOrderHistoryBounded, toDeltaMicroseconds, placeMarketOrder, placeBracket, placeProtectiveStopOrder, setLeverage } from './lib/delta';
-import { readControl, writeControl, writeStatus } from './lib/state';
+import { readControl, writeControl, writeStatus, observeRuntime } from './lib/state';
 import { openExecutionPatch, reconcileOpenTradeExecution, persistClosedTrade as persistClosedTradeBase, persistOpenBotTrade as persistOpenBotTradeBase, persistOpenManualTrade as persistOpenManualTradeBase } from './lib/trades/persistence';
 import { findTradeLifecycle, claimProtectionSubmission, clearTerminalProtectionSubmission, findLegacyUnresolvedTrades,findOpenBotTrade as findOpenBotTradeBase, findOpenManualTrades as findOpenManualTradesBase, findUnresolvedBotTrades as findUnresolvedBotTradesBase, findUnresolvedManualTrades as findUnresolvedManualTradesBase, markTradeReconciling,synchronizeTradeProtection,updateTradeProtectionState } from './lib/trades/repository';
 import { classifyBotExitEvidence, deltaTimestampMilliseconds, findBotCloseBoundary, findTradeCloseBoundary, reconstructOpenManualLifecycles, resolvePositionOwnership, stableTradeId as stableTradeIdBase, type BotExitOutcome } from './lib/trades/reconciliation';
@@ -268,12 +268,19 @@ function upsertUiLog(candleTime:number, patch:any) {
   if (i >= 0) uiLogs[i] = row;
   else uiLogs.unshift(row);
   uiLogs = uiLogs.slice(0, 60);
+  observeRuntime?.({kind:'decision',portfolioId,symbol:config.symbol,resolution:config.resolution,row,settings:{...runtimeConfigSnapshot(),configRevision,entrySettingsRevision}});
 }
 
 function addTradeEvent(type:string, details:any = {}) {
   recordDecisionLogEvent(type,details);
   tradeEvents.unshift({ id:`${Date.now()}-${Math.random().toString(36).slice(2,8)}`, at:new Date().toISOString(), type, ...details });
   tradeEvents = tradeEvents.slice(0, 100);
+  observeRuntime?.({kind:'event',portfolioId,symbol:config.symbol,event:type,data:tradeEvents[0],
+    context:(!details.tradeId||details.tradeId===activeTrade?.tradeId)?{
+      tradeId:activeTrade?.tradeId,orderId:activeTrade?.orderId,entryIntentId:activeTrade?.entryIntentId,
+      signalCandleTime:pending?.candleTime,
+      signalCorrelationId:pending?`signal:${portfolioId}:${config.symbol}:${config.resolution}:${pending.candleTime}`:undefined,activeTrade,pending
+    }:undefined});
 }
 
 function dailyLossScope():DailyLossScope {
@@ -551,6 +558,10 @@ async function refreshPosition(lastPrice:number, force = false) {
 
   if(positionSize===0&&!activeTrade){await reconcileStaleBotTrades(lastPrice);void reconcileStaleManualTrades();}
 
+  observeRuntime?.({kind:'event',portfolioId,symbol:config.symbol,event:'POSITION_RECONCILED',eventType:'SYNC',
+    data:{previousPositionSize,positionSize,entryPrice:position?.entry_price,tradeId:activeTrade?.tradeId,
+      attributionStatus:activeTrade?.attributionStatus,lifecycleReconciliationPending:activeTrade?.lifecycleReconciliationPending},
+    context:{exchangePosition:position,localTrade:activeTrade,refreshStartedAt:new Date(now)}});
   cachedPosition = position;
   cachedPositionSize = positionSize;
   previousPositionSize = positionSize;
@@ -621,6 +632,8 @@ async function cycle() {
   // Delta position, its SL/TP and its eventual close continue to update on UI.
   const control = readControl(portfolioId);
   const tradingEnabled = control.running === true && config.autoTrade && config.verified === true;
+  observeRuntime?.({kind:'event',portfolioId,symbol:config.symbol,event:'ROBOT_EXECUTION_STATE',eventType:'ROBOT',
+    data:{running:control.running===true,tradingEnabled,autoTrade:config.autoTrade,verified:config.verified}});
 
   product ||= await getProduct(config.symbol);
   assertPortfolioProductCompatibility();
@@ -920,6 +933,7 @@ async function cycle() {
               const intent={entrySnapshot,intentId,portfolioId,environment:runtimeEnvironment!,symbol:config.symbol,productId:Number(product.id),side,direction:entrySetup.direction,contracts:finalContracts,clientOrderId:oid,signalCandleTime:entrySetup.candleTime,configRevision:entryConfigRevision,trigger:entrySetup.trigger,sl:finalSl,tp:finalTp,contractValue,riskAmount:finalRiskAmount,takerRate:finalTakerRate,gstPct:config.gstPct,strategyConfig:botStrategyConfigSnapshot()};
               addTradeEvent('ENTRY_INTENT_PREPARED',{intentId,clientOrderId:oid,signalCandleTime:pending.candleTime});
               const submission=await submitPreparedEntryIntent(intent,async clientOrderId=>{await entryExecution.assertOwnership();addTradeEvent('ENTRY_SUBMISSION_STARTED',{intentId,clientOrderId});const adjacentSafety=await finalPreOrderSafetyCheck({...finalInput(),expectedContracts:finalContracts},finalDependencies());if(!adjacentSafety.ok){addTradeEvent(adjacentSafety.reason,{intentId,direction:entrySetup.direction,signalCandleTime:entrySetup.candleTime,...('guard'in adjacentSafety?{guard:adjacentSafety.guard}:{})});throw new EntryNotTransmittedError(adjacentSafety.reason);}const dispatchState=finalPreOrderDispatchStateCheck(finalInput(),finalDependencies());if(!dispatchState.ok){addTradeEvent(dispatchState.reason,{intentId,direction:entrySetup.direction,signalCandleTime:entrySetup.candleTime});throw new EntryNotTransmittedError(dispatchState.reason);}return placeMarketOrder(Number(product.id),side,adjacentSafety.contracts,clientOrderId);});
+              observeRuntime?.({kind:'event',portfolioId,symbol:config.symbol,event:'ENTRY_SUBMISSION_RESULT',eventType:'TRADE',data:{intentId,intent,submission}});
               if(submission.status!=='CONFIRMED'){
                 blockingEntryIntent=submission.status==='REJECTED'?null:submission.intent;
                 decision={action:'WAIT',reason:submission.status==='AMBIGUOUS'?'AMBIGUOUS_ENTRY_RECONCILIATION':submission.status==='REJECTED'?(submission.error as EntryNotTransmittedError).reason:'ENTRY_INTENT_BLOCKED'};
@@ -1177,6 +1191,7 @@ async function main() {
       }
       await cycle();
     } catch (e:any) {
+      observeRuntime?.({kind:'event',portfolioId,symbol:config.symbol,event:'WORKER_CYCLE_FAILED',eventType:'ERROR',data:{subsystem:'worker',operation:'cycle',error:e}});
       const classified=deltaErrorDetails(e),message=`${classified.code}: ${classified.message}`;
       const productMismatch=e instanceof PortfolioProductModeMismatch?e:null;
       const statusMessage=productMismatch

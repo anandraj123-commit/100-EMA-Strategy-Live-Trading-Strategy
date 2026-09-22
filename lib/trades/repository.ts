@@ -1,3 +1,4 @@
+import { observeRuntime } from '../runtime-events/logger';
 import { supportedTriggerMethod, type TriggerMethod } from './protection';
 import { randomUUID } from 'node:crypto';
 import { mergeTradeLifecycle, protectionPricePatch } from './lifecycle';
@@ -31,7 +32,18 @@ export async function mutateTradeLifecycle(tradeId:string,portfolioId:string|und
     const patch=mutate(previous);if(!patch)return previous;
     const revision=previous.lifecycleRevision;
     const result=await rows.updateOne({...scope,lifecycleRevision:revision??{$exists:false}},{$set:{...patch,updatedAt:new Date(),lifecycleRevision:(revision??0)+1}});
-    if(result.matchedCount===1)return {...previous,...patch,lifecycleRevision:(revision??0)+1};
+    if(result.matchedCount===1){
+      const recorded={...previous,...patch,lifecycleRevision:(revision??0)+1};
+      if(recorded.portfolioId){
+        observeRuntime({kind:'trade',portfolioId:recorded.portfolioId,symbol:recorded.symbol,record:recorded});
+        observeRuntime({kind:'event',portfolioId:recorded.portfolioId,symbol:recorded.symbol,event:'PROTECTION_STATE_OBSERVED',eventType:'PROTECTION',
+          data:{tradeId:recorded.tradeId,state:recorded.protectionState,sl:recorded.currentSL,tp:recorded.currentTarget,
+            slOrderId:recorded.protectionSlOrderId,tpOrderId:recorded.protectionTpOrderId,
+            slTriggerMethod:recorded.currentSLTriggerMethod,tpTriggerMethod:recorded.currentTargetTriggerMethod,
+            submissions:recorded.protectionSubmissions,slHistory:recorded.slHistory,targetHistory:recorded.targetHistory}});
+      }
+      return recorded;
+    }
   }
   throw new Error('Trade lifecycle concurrently changed; retry reconciliation');
 }

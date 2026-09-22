@@ -1,3 +1,4 @@
+import { observeRuntime } from '../runtime-events/logger';
 import { entryExecutionMetrics, exposureMetrics, openExecutionPatch, uniqueFills } from './lifecycle';
 import { config } from '../config';
 import { getFillsBounded, getOrderHistoryBounded, toDeltaMicroseconds } from '../delta';
@@ -111,6 +112,7 @@ export async function persistClosedTrade(trade:ActiveTradeSnapshot, productId:nu
   const exitAt=exitFills.map(f=>date(f.created_at)).filter((v):v is Date=>!!v).sort((a,b)=>b.valueOf()-a.valueOf())[0]??new Date(dependencies.now());
   const risk=num(trade.riskAmount); const realizedR=source==='bot'&&risk&&money.netPnL!=null?money.netPnL/risk:null;
   const doc:Omit<TradeDocument,'_id'|'createdAt'|'updatedAt'>={tradeId,...context,closeReconciliationPending:false,entryDataStatus:'reconciled',entryTimeSource:entryFills.length?'exchange':'observed',exitTimeSource:exitFills.some(f=>date(f.created_at))?'exchange':'observed',remainingContracts:0,remainingQuantity:0,entryOrderIds:[...new Set(entryFills.map(f=>String(f.order_id)))],exitOrderIds,...entryExecutionMetrics(side,source==='bot'?trade.trigger:null,actualEntry,contracts,cv),symbol,productId,side,source,attributionStatus:source==='bot'?'BOT_CONFIRMED':'MANUAL_CONFIRMED',status:'CLOSED',entryTime:entryFills.map(f=>date(f.created_at)).filter((v):v is Date=>!!v).sort((a,b)=>a.valueOf()-b.valueOf())[0]??(trade.openedAt?new Date(trade.openedAt):null),intendedEntryPrice:source==='bot'?num(trade.trigger):null,actualEntryPrice:actualEntry,quantity,contracts,contractValue:cv,...(source==='bot'?{riskAmount:risk,takerRate:rate,gstPct}:{}),initialSL:num(trade.initialSL??trade.sl),takeProfit:num(trade.takeProfit??trade.tp),exitTime:exitAt,intendedExitPrice:num(observedExitPrice),actualExitPrice:actualExit,exitReason:provenExitReason,...money,realizedR,entryOrderId,exitOrderId,entryClientOrderId:trade.clientOrderId??null,exitClientOrderId:id(exitOrder?.client_order_id),entryFillIds,exitFillIds,reconciledAt:new Date(dependencies.now()),feeDataSource:money.brokerage!=null?'delta_fills_commission':estimatedBrokerage!=null?'configured_rate_estimate':null,priceDataSource:actualEntry!=null&&actualExit!=null?'delta_weighted_fills':actualExit!=null?'partial_delta_fills':'unavailable',attributionNote:attribution.reason,reconciliationError:null};
+  if(context)observeRuntime({kind:'event',portfolioId:context.portfolioId,symbol,event:'CLOSED_TRADE_FILL_EVIDENCE',eventType:'TRADE',data:{tradeId,record:doc,entryFills,exitFills}});
   return await dependencies.upsert(doc)??doc;
 }
 
@@ -127,6 +129,8 @@ export async function reconcileOpenTradeExecution(trade:ActiveTradeSnapshot,prod
   if(marginPosition&&Number(marginPosition.product_id)===productId&&Number(marginPosition.size)===Number(position.size)&&Number(marginPosition.entry_price)===Number(position.entry_price))combined={...marginPosition,...position,margin:marginPosition.margin};
   const patch=openExecutionPatch(record,combined,fills.result,orders.result,fills.complete&&orders.complete);
   if(!patch)return null;
+  observeRuntime({kind:'event',portfolioId:context.portfolioId,symbol:record.symbol,event:'EXECUTION_FILL_EVIDENCE',eventType:'TRADE',
+    data:{tradeId:record.tradeId,patch,fills:fills.result.filter(fill=>patch.entryFillIds.includes(String(fill.id))||patch.exitFillIds.includes(String(fill.id)))}});
   await claimTradeFills({environment:context.environment,productId,portfolioId:context.portfolioId,tradeId:record.tradeId,fillIds:patch.entryFillIds,role:'ENTRY'});
   if(patch.exitFillIds.length)await claimTradeFills({environment:context.environment,productId,portfolioId:context.portfolioId,tradeId:record.tradeId,fillIds:patch.exitFillIds,role:'EXIT'});
   return mutateTradeLifecycle(record.tradeId,context.portfolioId,previous=>{
