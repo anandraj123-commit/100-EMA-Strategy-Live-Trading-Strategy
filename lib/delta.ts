@@ -10,19 +10,74 @@ export function classifyDeltaError(input:{error?:unknown;status?:number;payload?
 export function deltaErrorDetails(error:unknown){const code=classifyDeltaError({error});return {code,message:messages[code],network:code==='DELTA_NETWORK_OFFLINE'||code==='DELTA_NETWORK_TIMEOUT'};}
 const failure=(input:{error?:unknown;status?:number;payload?:unknown})=>new DeltaRequestError(classifyDeltaError(input),input.status);
 export type PortfolioEnvironment = 'real' | 'demo';
+type RequestDiagnostic = { method: string; path: string; sensitiveValues: string[] };
+
+// Never serialize a request, headers, exception, or arbitrary response body.
+function diagnosticText(value: unknown, context: RequestDiagnostic): string | undefined {
+  if (typeof value !== 'string' && typeof value !== 'number') return undefined;
+  const text = String(value);
+  // Omit the entire field when it may echo credentials, including encoded values.
+  const variants = [text];
+  try { variants.push(decodeURIComponent(text)); } catch { /* Not URL encoded. */ }
+  if (variants.some(value =>
+    /api[ _-]?key|secret|signature\s*[:=]|authorization|bearer|cookie|session|token|password|mongodb|https?:\/\//i.test(value) ||
+    context.sensitiveValues.some(secret => value.includes(secret))
+  )) return '[REDACTED]';
+  return text.replace(/[\u0000-\u001f\u007f-\u009f]/g, ' ').slice(0, 300);
+}
+
+function requestDiagnostic(url: string, init: RequestInit): RequestDiagnostic {
+  const sensitiveValues = [config.apiKey, config.apiSecret,
+    ...Object.entries(process.env).filter(([name]) => /key|secret|token|password|uri|credential|cookie|signature/i.test(name)).map(([, value]) => value),
+    ...Array.from(new Headers(init.headers).entries()).filter(([name]) => /key|secret|signature|authorization|cookie|token/i.test(name)).map(([, value]) => value)
+  ].filter((value): value is string => Boolean(value));
+  const context = { method: init.method || 'GET', path: '[unavailable]', sensitiveValues };
+  try { context.path = diagnosticText(new URL(url).pathname, context) || '[unavailable]'; } catch { /* Never log the raw URL. */ }
+  return context;
+}
+
+function logRequestFailure(context: RequestDiagnostic, error: DeltaRequestError, res?: Response, payload?: any) {
+  try {
+    console.error('[DELTA REQUEST FAILED] ' + JSON.stringify({
+      method: context.method,
+      path: context.path,
+      ...(res ? { status: res.status, statusText: diagnosticText(res.statusText, context) } : {}),
+      classification: error.code,
+      deltaErrorCode: diagnosticText(payload?.error?.code, context),
+      deltaErrorMessage: diagnosticText(payload?.error?.message, context),
+      message: diagnosticText(payload?.message, context)
+    }));
+  } catch { /* Diagnostics must not change request behavior. */ }
+}
+
 async function deltaFetch(url: string, init: RequestInit) {
+  const context = requestDiagnostic(url, init);
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   try {
-    return await fetch(url, { ...init, signal: controller.signal });
+    const res = await fetch(url, { ...init, signal: controller.signal });
+    return { res, context };
   } catch (e:any) {
-    throw failure({error:e});
+    const error = failure({error:e});
+    logRequestFailure(context, error);
+    throw error;
   } finally {
     clearTimeout(timer);
   }
 }
 
-async function deltaJson(res:Response){let json:any;try{json=await res.json();}catch{throw failure({status:res.status,payload:null});}if(!json||typeof json!=='object'||Array.isArray(json))throw failure({status:res.status,payload:json});if(!res.ok||json.success===false)throw failure({status:res.status,payload:json});return json;}
+async function deltaJson({ res, context }: { res: Response; context: RequestDiagnostic }) {
+  let json:any;
+  try {
+    try { json = await res.json(); } catch { throw failure({status:res.status,payload:null}); }
+    if (!json || typeof json !== 'object' || Array.isArray(json)) throw failure({status:res.status,payload:json});
+    if (!res.ok || json.success === false) throw failure({status:res.status,payload:json});
+    return json;
+  } catch (error) {
+    if (error instanceof DeltaRequestError) logRequestFailure(context, error, res, json);
+    throw error;
+  }
+}
 
 function sign(method: string, timestamp: string, path: string, query: string, body: string) {
   const message = method + timestamp + path + query + body;
