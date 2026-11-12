@@ -93,17 +93,6 @@ export function getCsrfToken(sessionToken: string) {
   return csrfForToken(sessionToken);
 }
 
-function effectiveRequestOrigin(req: NextRequest): string | null {
-  const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN;
-  if (!railwayDomain) return req.nextUrl.origin;
-
-  // Only trust Railway proxy headers when they match its configured public domain.
-  // Exact checks also reject ambiguous multi-value headers and HTTPS downgrades.
-  const proto = req.headers.get('x-forwarded-proto') ?? req.nextUrl.protocol.slice(0, -1);
-  const host = req.headers.get('x-forwarded-host') ?? req.headers.get('host') ?? req.nextUrl.host;
-  if (proto !== 'https' || host !== railwayDomain) return null;
-  return `${proto}://${host}`;
-}
 
 export function verifyCsrf(req: NextRequest, sessionToken: string) {
   const origin = req.headers.get('origin');
@@ -114,4 +103,62 @@ export function verifyCsrf(req: NextRequest, sessionToken: string) {
   const suppliedBytes = Buffer.from(supplied);
   const expectedBytes = Buffer.from(expected);
   return suppliedBytes.length === expectedBytes.length && crypto.timingSafeEqual(suppliedBytes, expectedBytes);
+}
+
+
+function effectiveRequestOrigin(req: NextRequest): string | null {
+  const configuredOrigin = process.env.APP_PUBLIC_ORIGIN;
+
+  if (configuredOrigin) {
+    try {
+      const expected = new URL(configuredOrigin);
+
+      // Require a valid HTTPS origin.
+      if (
+        expected.protocol !== 'https:' ||
+        expected.username ||
+        expected.password ||
+        expected.pathname !== '/' ||
+        expected.search ||
+        expected.hash
+      ) {
+        return null;
+      }
+
+      // Validate the request host against the configured public host.
+      const host = req.headers.get('host');
+      const forwardedHost = req.headers.get('x-forwarded-host');
+
+      if (host !== expected.host) return null;
+      if (forwardedHost && forwardedHost !== expected.host) {
+        return null;
+      }
+
+      return expected.origin;
+    } catch {
+      return null;
+    }
+  }
+
+  // Preserve existing Railway hosting behavior.
+  const railwayDomain = process.env.RAILWAY_PUBLIC_DOMAIN;
+
+  if (!railwayDomain) {
+    return req.nextUrl.origin;
+  }
+
+  const proto =
+    req.headers.get('x-forwarded-proto') ??
+    req.nextUrl.protocol.slice(0, -1);
+
+  const host =
+    req.headers.get('x-forwarded-host') ??
+    req.headers.get('host') ??
+    req.nextUrl.host;
+
+  if (proto !== 'https' || host !== railwayDomain) {
+    return null;
+  }
+
+  return `${proto}://${host}`;
 }
